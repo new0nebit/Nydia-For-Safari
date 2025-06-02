@@ -56,7 +56,7 @@ npm run build
 
 4. Build the Xcode project:
 ```
-xcodebuild -project "Nydia/Nydia Passkey Holder.xcodeproj" -scheme "Nydia Passkey Holder" -configuration Release -quiet
+xcodebuild -project "app/Nydia Passkey Holder.xcodeproj" -scheme "Nydia Passkey Holder" -configuration Release -quiet
 ```
 
 5. Load the extension in Safari browser:
@@ -92,7 +92,8 @@ xcodebuild -project "Nydia/Nydia Passkey Holder.xcodeproj" -scheme "Nydia Passke
 
 <br>
 
-> [!IMPORTANT]
+> [!CAUTION]
 > The Nydia Passkey Holder is in an early stage of active development.<br>
 > Passkey registration and authentication through Nydia may not be supported on all websites yet.<br>
+> Future updates may introduce compatibility changes that could affect existing stored credentials.<br>
 > Handle with care.
