@@ -10,7 +10,7 @@ export default (env, argv) => {
   const isAnalyze = env && env.analyze;
   
   // Set output directory
-  const outputDir = path.resolve(process.cwd(), 'Nydia/Nydia Extension/Resources');
+  const outputDir = path.resolve(process.cwd(), 'app/Nydia Extension/Resources');
 
   return {
     entry: {
