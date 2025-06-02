@@ -403,7 +403,7 @@ class WebAuthnInterceptor {
         rawId: toArrayBuffer(parsedResponse.rawId || parsedResponse.id)!,
         response: attestationResponse,
         getClientExtensionResults: () => ({}),
-        authenticatorAttachment: parsedResponse.authenticatorAttachment || null,
+        authenticatorAttachment: 'platform',
       };
 
       console.debug('[Dispatcher] Created credential:', credential);
@@ -423,7 +423,7 @@ class WebAuthnInterceptor {
         rawId: toArrayBuffer(parsedResponse.rawId || parsedResponse.id)!,
         response: assertionResponse,
         getClientExtensionResults: () => ({}),
-        authenticatorAttachment: parsedResponse.authenticatorAttachment || null,
+        authenticatorAttachment: 'platform',
       };
 
       return credential;
