@@ -3,6 +3,11 @@
  * Keep base/common styles first, then component styles, then overrides.
  */
 
+/* Use system color theme */
+:root {
+  color-scheme: light dark;
+}
+
 /* Base styles used throughout the app */
 @import 'common.css';
 
