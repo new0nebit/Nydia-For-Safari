@@ -7,6 +7,18 @@ import { RenterdSettings, StoredCredential, EncryptedRecord } from './types';
 // Web Crypto API
 const subtle = crypto.subtle;
 
+// Check background context  
+export function isBackgroundContext(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    window.location.href === browser.runtime.getURL('background.html')
+  );
+}
+
+async function sendMessageToExtension(msg: any): Promise<any> {
+  return isBackgroundContext() ? handleMessageInBackground(msg) : browser.runtime.sendMessage(msg);
+}
+
 // IndexedDB
 const DB_NAME = 'NydiaDB';
 const DB_VERSION = 4;
@@ -324,5 +336,5 @@ export async function findCredential(
 export async function getAllStoredCredentials(): Promise<StoredCredential[]> {
   const r = await sendMessageToExtension({ type: 'getAllStoredCredentials' });
   if (r?.error) throw new Error(r.error);
-  return r;
+  return Array.isArray(r) ? r : [];
 }
