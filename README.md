@@ -3,6 +3,7 @@
     <source srcset=".docs/images/nydia-leaf-dark.svg" media="(prefers-color-scheme: light)" height="44px" alt="Nydia Logo">
     <img src=".docs/images/nydia-leaf-light.svg" height="44px" alt="Nydia Logo">
   </picture>
+</h1>
 
 <div align="center">
 
@@ -13,10 +14,9 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](https://github.com/new0nebit/Nydia-For-Safari/blob/main/LICENSE)
 
 </div>
-</h1>
 
 <div align="center">
-    <img src=".docs/images/menu.png" height="630px" alt="Nydia Logo">
+    <img src=".docs/images/menu.png" width="320" alt="Nydia Logo">
 </div>
 <br>
 <p align="center">
@@ -81,7 +81,7 @@ xcodebuild -project "app/Nydia Passkey Holder.xcodeproj" -scheme "Nydia Passkey 
     - Bucket Name
 
 <div align="center">
-    <img src=".docs/images/renterd-settings.png" height="380px" alt="Nydia Logo">
+    <img src=".docs/images/renterd-settings.png" width="350" alt="Nydia Logo">
 </div>
 
 ## Security Notes
