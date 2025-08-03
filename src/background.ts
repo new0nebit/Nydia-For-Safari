@@ -109,25 +109,6 @@ function secureCleanup(data: Uint8Array | number[] | null): void {
   }
 }
 
-// Firefox self-send patch
-function patchSelfSend(local: (m: any) => Promise<any>) {
-  const rt = browser.runtime;
-  if (!rt?.sendMessage) return;
-
-  const myId = rt.id;
-  const orig = rt.sendMessage.bind(rt);
-
-  rt.sendMessage = ((...args: any[]) => {
-    let extId: string | undefined, msg: any;
-    if (args.length === 1) msg = args[0];
-    else [extId, msg] = args;
-
-    return !extId || extId === myId ? local(msg) : orig(...(args as any));
-  }) as typeof rt.sendMessage;
-
-  logInfo('runtime.sendMessage patched');
-}
-
 // Deserializes the options object by converting base64url strings to ArrayBuffers.
 function deserializeOptions(o: any): any {
   const out = { ...o };
@@ -341,7 +322,6 @@ async function router(msg: any): Promise<any> {
 // Bootstrap
 logInfo('bootstrap');
 logInfo('isBackgroundContext', isBackgroundContext());
-patchSelfSend(router);
 browser.runtime.onMessage.addListener(router);
 
 initializeAuthenticator();
