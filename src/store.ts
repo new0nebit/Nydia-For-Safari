@@ -7,7 +7,7 @@ import { RenterdSettings, StoredCredential, EncryptedRecord } from './types';
 // Web Crypto API
 const subtle = crypto.subtle;
 
-// Check background context  
+// Check background context
 export function isBackgroundContext(): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -66,19 +66,22 @@ async function getMasterKey(): Promise<CryptoKey> {
 
 // encrypt / decrypt helpers
 async function encryptCredential(c: StoredCredential): Promise<EncryptedRecord> {
+  // Remove isSynced before encryption to avoid storing it inside data
+  const { isSynced, ...withoutSync } = c;
+
   const key = await getMasterKey();
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await subtle.encrypt(
     { name: 'AES-GCM', iv },
     key,
-    new TextEncoder().encode(JSON.stringify(c)),
+    new TextEncoder().encode(JSON.stringify(withoutSync)),
   );
 
   return {
     uniqueId: c.uniqueId,
     iv: base64UrlEncode(iv),
     data: base64UrlEncode(new Uint8Array(ct)),
-    isSynced: c.isSynced,
+    isSynced: isSynced,
   } as any;
 }
 
@@ -90,7 +93,7 @@ async function decryptCredential(r: EncryptedRecord): Promise<StoredCredential> 
     base64UrlDecode(r.data),
   );
   const sc: StoredCredential = JSON.parse(new TextDecoder().decode(pt));
-  sc.isSynced = (r as any).isSynced ?? false;
+  sc.isSynced = r.isSynced ?? false;
   return sc;
 }
 
@@ -273,7 +276,7 @@ export async function loadPrivateKey(
   return [privKey, algObj, rec.counter];
 }
 
-// Messaging in Background Context (MV3)
+// Messaging in Background Context
 export async function handleMessageInBackground(message: any): Promise<any> {
   try {
     switch (message.type) {
