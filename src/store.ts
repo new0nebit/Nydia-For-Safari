@@ -7,6 +7,9 @@ import { RenterdSettings, StoredCredential, EncryptedRecord } from './types';
 // Web Crypto API
 const subtle = crypto.subtle;
 
+// Simple per-credential mutex to avoid race conditions during counter updates
+const counterLocks: Map<string, Promise<void>> = new Map();
+
 // Check background context
 export function isBackgroundContext(): boolean {
   return (
@@ -182,25 +185,32 @@ export async function saveEncryptedCredential(record: EncryptedRecord): Promise<
 
 // counter + Sia sync
 export async function updateCredentialCounter(credentialId: string): Promise<void> {
-  const rec = await getStoredCredentialByCredentialId(credentialId);
-  if (!rec) throw new Error('Credential not found');
+  const prev = counterLocks.get(credentialId) ?? Promise.resolve();
 
-  rec.counter++;
-  rec.isSynced = false;
+  const next = prev.then(async () => {
+    const rec = await getStoredCredentialByCredentialId(credentialId);
+    if (!rec) throw new Error('Credential not found');
 
-  const encUnsynced = await encryptCredential(rec);
-  await saveEncryptedCredential(encUnsynced);
+    rec.counter++;
+    rec.isSynced = false;
 
-  uploadPasskeyDirect(encUnsynced).then(async (res) => {
-    if (res.success) {
-      rec.isSynced = true;
-      await saveEncryptedCredential(await encryptCredential(rec));
-    } else {
-      logError('counter sync Sia', res.error);
-    }
-  }).catch((err) => {
-    logError('Error in async upload', err);
+    const encUnsynced = await encryptCredential(rec);
+    await saveEncryptedCredential(encUnsynced);
+
+    uploadPasskeyDirect(encUnsynced).then(async (res) => {
+      if (res.success) {
+        rec.isSynced = true;
+        await saveEncryptedCredential(await encryptCredential(rec));
+      } else {
+        logError('counter sync Sia', res.error);
+      }
+    }).catch((err) => {
+      logError('Error in async upload', err);
+    });
   });
+
+  counterLocks.set(credentialId, next);  
+  next.finally(() => counterLocks.delete(credentialId));
 }
 
 // Utility Functions
