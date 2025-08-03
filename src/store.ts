@@ -1,326 +1,224 @@
 import { Ed25519, ES256, RS256, SigningAlgorithm } from './algorithms';
 import { base64UrlDecode, base64UrlEncode } from './base64url';
-import { logError, logInfo } from './logger';
+import { logError } from './logger';
 import { uploadPasskeyDirect } from './sia';
-import { RenterdSettings, StoredCredential } from './types';
+import { RenterdSettings, StoredCredential, EncryptedRecord } from './types';
 
 // Web Crypto API
-const crypto = self.crypto;
 const subtle = crypto.subtle;
 
-/* ================================================
-   Helper Functions
-================================================ */
+// Simple per-credential mutex to avoid race conditions during counter updates
+const counterLocks: Map<string, Promise<void>> = new Map();
 
-// Determines if the current execution context is a background script.
-function isBackgroundContext(): boolean {
-  try {
-    return (
-      typeof browser !== 'undefined' &&
-      typeof browser.runtime.getBackgroundPage === 'function'
-    );
-  } catch (error) {
-    console.error('Error in isBackgroundContext:', error);
-    return false;
-  }
+// Check background context
+export function isBackgroundContext(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    window.location.href === browser.runtime.getURL('background.html')
+  );
 }
 
-// Sends a message to the background script or handles it directly if in the background context.
-async function sendMessageToExtension(message: any): Promise<any> {
-  try {
-    if (isBackgroundContext()) {
-      logInfo('[store] direct call:', message.type);
-      return await handleMessageInBackground(message);
-    } else {
-      logInfo('[store] runtime.sendMessage →', message.type);
-      return await browser.runtime.sendMessage(message);
-    }
-  } catch (error) {
-    logError('Error in sendMessageToExtension:', error);
-    throw error;
-  }
+async function sendMessageToExtension(msg: any): Promise<any> {
+  return isBackgroundContext() ? handleMessageInBackground(msg) : browser.runtime.sendMessage(msg);
 }
 
-/* ================================================
-   IndexedDB Operations
-================================================ */
-
+// IndexedDB
 const DB_NAME = 'NydiaDB';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_NAME = 'storedCredentials';
+const SETTINGS_STORE = 'settings';
 
-// Opens the IndexedDB database.
+function setupStores(db: IDBDatabase) {
+  if (!db.objectStoreNames.contains(STORE_NAME)) {
+    db.createObjectStore(STORE_NAME, { keyPath: 'uniqueId' });
+  }
+  if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
+    db.createObjectStore(SETTINGS_STORE, { keyPath: 'id' });
+  }
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      let objectStore: IDBObjectStore;
-
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        objectStore = db.createObjectStore(STORE_NAME, { keyPath: 'uniqueId' });
-        console.log('Created new object store:', STORE_NAME);
-      } else {
-        const transaction = request.transaction;
-        if (!transaction) {
-          const error = new Error('Transaction is undefined in onupgradeneeded event.');
-          console.error(error);
-          reject(error);
-          return;
-        }
-        objectStore = transaction.objectStore(STORE_NAME);
-        console.log('Using existing object store:', STORE_NAME);
-      }
-
-      if (!objectStore.indexNames.contains('credentialId')) {
-        objectStore.createIndex('credentialId', 'credentialId', { unique: true });
-        console.log('Created credentialId index');
-      }
-      if (!objectStore.indexNames.contains('rpId')) {
-        objectStore.createIndex('rpId', 'rpId', { unique: false });
-        console.log('Created rpId index');
-      }
-
-      if (!db.objectStoreNames.contains('settings')) {
-        db.createObjectStore('settings', { keyPath: 'id' });
-        console.log('Created settings store');
-      }
-    };
-
-    request.onsuccess = () => {
-      console.log('Database opened successfully');
-      resolve(request.result);
-    };
-
-    request.onerror = () => {
-      console.error('Error opening database:', request.error);
-      reject(request.error);
-    };
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => setupStores(req.result);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
   });
 }
 
-/* ================================================
-   Settings Management
-================================================ */
+// masterKey
+let masterKey: CryptoKey | null = null;
 
+async function getMasterKey(): Promise<CryptoKey> {
+  if (masterKey) return masterKey;
+
+  const db = await openDatabase();
+  const item = await new Promise<any>((res) => {
+    db
+      .transaction(SETTINGS_STORE, 'readonly')
+      .objectStore(SETTINGS_STORE)
+      .get('ephemeralKey').onsuccess = (e) => res((e.target as any).result);
+  });
+
+  if (item?.key) {
+    masterKey = item.key;
+    return masterKey;
+  }
+  throw new Error('masterKeyMissing');
+}
+
+// encrypt / decrypt helpers
+async function encryptCredential(c: StoredCredential): Promise<EncryptedRecord> {
+  // Remove isSynced before encryption to avoid storing it inside data
+  const { isSynced, ...withoutSync } = c;
+
+  const key = await getMasterKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(JSON.stringify(withoutSync)),
+  );
+
+  return {
+    uniqueId: c.uniqueId,
+    iv: base64UrlEncode(iv),
+    data: base64UrlEncode(new Uint8Array(ct)),
+    isSynced: isSynced,
+  } as any;
+}
+
+async function decryptCredential(r: EncryptedRecord): Promise<StoredCredential> {
+  const key = await getMasterKey();
+  const pt = await subtle.decrypt(
+    { name: 'AES-GCM', iv: base64UrlDecode(r.iv) },
+    key,
+    base64UrlDecode(r.data),
+  );
+  const sc: StoredCredential = JSON.parse(new TextDecoder().decode(pt));
+  sc.isSynced = r.isSynced ?? false;
+  return sc;
+}
+
+// Settings Management
 export async function saveSettings(settings: RenterdSettings): Promise<void> {
   const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction('settings', 'readwrite');
-    const store = transaction.objectStore('settings');
-    const request = store.put({ ...settings, id: 'renterdSettings' });
-
-    request.onsuccess = () => {
-      console.log('Settings saved successfully.');
-      resolve();
-    };
-
-    request.onerror = () => {
-      console.error('Error saving settings:', request.error);
-      reject(request.error);
-    };
+  await new Promise<void>((res) => {
+    db
+      .transaction(SETTINGS_STORE, 'readwrite')
+      .objectStore(SETTINGS_STORE)
+      .put({ ...settings, id: 'renterdSettings' }).onsuccess = () => res();
   });
 }
 
 export async function getSettings(): Promise<RenterdSettings | null> {
   const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const request = db
-      .transaction('settings', 'readonly')
-      .objectStore('settings')
-      .get('renterdSettings');
-
-    request.onsuccess = () => resolve((request.result as RenterdSettings) || null);
-    request.onerror = () => {
-      console.error('Error retrieving settings:', request.error);
-      reject(request.error);
-    };
+  return new Promise((res) => {
+    db
+      .transaction(SETTINGS_STORE, 'readonly')
+      .objectStore(SETTINGS_STORE)
+      .get('renterdSettings').onsuccess = (e) => res((e.target as any).result ?? null);
   });
 }
 
-/* ================================================
-   Stored Credential Management
-================================================ */
-
-export async function saveStoredCredential(storedCredential: StoredCredential): Promise<void> {
-  if (!storedCredential.creationTime) storedCredential.creationTime = Date.now();
-
+// Stored Credential Management
+export async function saveStoredCredential(c: StoredCredential): Promise<void> {
+  const enc = await encryptCredential(c);
   const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const request = db
+  await new Promise<void>((res) => {
+    db
       .transaction(STORE_NAME, 'readwrite')
       .objectStore(STORE_NAME)
-      .put(storedCredential);
-
-    request.onsuccess = () => {
-      logInfo('StoredCredential saved successfully:', storedCredential.uniqueId);
-      resolve();
-    };
-    request.onerror = () => {
-      logError('Error saving StoredCredential:', request.error);
-      reject(request.error);
-    };
-  });
-}
-
-async function getStoredCredentialByCredentialId(
-  credentialId: string,
-): Promise<StoredCredential | undefined> {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const request = db
-      .transaction(STORE_NAME, 'readonly')
-      .objectStore(STORE_NAME)
-      .index('credentialId')
-      .get(credentialId);
-
-    request.onsuccess = () => resolve(request.result as StoredCredential | undefined);
-    request.onerror = () => {
-      logError('Error getting StoredCredential by credentialId:', request.error);
-      reject(request.error);
-    };
+      .put(enc).onsuccess = () => res();
   });
 }
 
 export async function getAllStoredCredentialsFromDB(): Promise<StoredCredential[]> {
   const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll();
-
-    request.onsuccess = () => resolve(request.result as StoredCredential[]);
-    request.onerror = () => {
-      logError('Error getting all StoredCredentials:', request.error);
-      reject(request.error);
-    };
+  const encList: EncryptedRecord[] = await new Promise((res) => {
+    db
+      .transaction(STORE_NAME, 'readonly')
+      .objectStore(STORE_NAME)
+      .getAll().onsuccess = (e) => res((e.target as any).result);
   });
+
+  const out: StoredCredential[] = [];
+  for (const r of encList) {
+    try {
+      out.push(await decryptCredential(r));
+    } catch (e) {
+      logError('decrypt error', e);
+    }
+  }
+  return out;
 }
 
-async function findStoredCredential(
-  options: any,
-  selectedCredentialId?: string,
+async function getStoredCredentialByCredentialId(
+  credentialId: string,
 ): Promise<StoredCredential | undefined> {
+  return (await getAllStoredCredentialsFromDB()).find((c) => c.credentialId === credentialId);
+}
+
+// Get encrypted credential directly from DB
+export async function getEncryptedCredentialByUniqueId(
+  uniqueId: string,
+): Promise<EncryptedRecord | null> {
   const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const request = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll();
-
-    request.onsuccess = () => {
-      const storedCredentials = (request.result as StoredCredential[]) || [];
-      const rpId = options.rpId || new URL(options.origin).hostname;
-      let match: StoredCredential | undefined;
-
-      if (selectedCredentialId) {
-        match = storedCredentials.find(
-          (cred) => cred.credentialId === selectedCredentialId && cred.rpId === rpId,
-        );
-      } else if (options.allowCredentials?.length) {
-        for (const a of options.allowCredentials) {
-          const id =
-            typeof a.id === 'string' ? a.id : base64UrlEncode(new Uint8Array(a.id));
-          match = storedCredentials.find((c) => c.credentialId === id && c.rpId === rpId);
-          if (match) break;
-        }
-      } else {
-        match = storedCredentials.find((c) => c.rpId === rpId);
-      }
-      resolve(match);
-    };
-
-    request.onerror = () => {
-      logError('Error finding StoredCredential:', request.error);
-      reject(request.error);
-    };
+  return new Promise((res) => {
+    db
+      .transaction(STORE_NAME, 'readonly')
+      .objectStore(STORE_NAME)
+      .get(uniqueId).onsuccess = (e) => res((e.target as any).result ?? null);
   });
 }
 
-export async function updateCredentialCounter(credentialId: string): Promise<void> {
+// Save encrypted credential directly to DB
+export async function saveEncryptedCredential(record: EncryptedRecord): Promise<void> {
   const db = await openDatabase();
-  const storedCredential = await getStoredCredentialByCredentialId(credentialId);
-  if (!storedCredential) throw new Error('Credential not found for updating counter');
-
-  storedCredential.counter++;
-
-  return new Promise((resolve, reject) => {
-    const request = db
+  await new Promise<void>((res) => {
+    db
       .transaction(STORE_NAME, 'readwrite')
       .objectStore(STORE_NAME)
-      .put(storedCredential);
-
-    request.onsuccess = async () => {
-      logInfo('Credential counter updated', { credentialId, newCounter: storedCredential.counter });
-      const res = await uploadPasskeyDirect(storedCredential);
-      if (!res.success) logError('Failed to sync updated passkey:', res.error);
-      resolve();
-    };
-    request.onerror = () => {
-      logError('Error updating credential counter:', request.error);
-      reject(request.error);
-    };
+      .put(record).onsuccess = () => res();
   });
 }
 
-/* ================================================
-   Messaging in Background Context
-================================================ */
+// counter + Sia sync
+export async function updateCredentialCounter(credentialId: string): Promise<void> {
+  const prev = counterLocks.get(credentialId) ?? Promise.resolve();
 
-export async function handleMessageInBackground(message: any): Promise<any> {
-  switch (message.type) {
-    case 'saveStoredCredential':
-      await saveStoredCredential(message.storedCredential);
-      return { status: 'success' };
-    case 'getStoredCredential':
-      return (await getStoredCredentialByCredentialId(message.credentialId)) || {
-        error: 'Credential not found',
-      };
-    case 'findCredential':
-      return (await findStoredCredential(message.options, message.selectedCredentialId)) || {
-        error: 'Credential not found',
-      };
-    case 'updateCredentialCounter':
-      await updateCredentialCounter(message.credentialId);
-      return { status: 'success' };
-    case 'getAllStoredCredentials':
-      return await getAllStoredCredentialsFromDB();
-    default:
-      throw new Error('Unknown message type');
-  }
+  const next = prev.then(async () => {
+    const rec = await getStoredCredentialByCredentialId(credentialId);
+    if (!rec) throw new Error('Credential not found');
+
+    rec.counter++;
+    rec.isSynced = false;
+
+    const encUnsynced = await encryptCredential(rec);
+    await saveEncryptedCredential(encUnsynced);
+
+    uploadPasskeyDirect(encUnsynced).then(async (res) => {
+      if (res.success) {
+        encUnsynced.isSynced = true;
+        await saveEncryptedCredential(encUnsynced);
+      } else {
+        logError('counter sync Sia', res.error);
+      }
+    }).catch((err) => {
+      logError('Error in async upload', err);
+    });
+  });
+
+  counterLocks.set(credentialId, next);  
+  next.finally(() => counterLocks.delete(credentialId));
 }
 
-/* ================================================
-   MemoryStore Class
-================================================ */
-
-class MemoryStore {
-  private static instance: MemoryStore | null = null;
-  private store = new Map<string, any>();
-
-  private constructor() {}
-
-  public static getInstance(): MemoryStore {
-    return this.instance ?? (this.instance = new MemoryStore());
-  }
-
-  public saveAttestationResponse(resp: { id: string }): void {
-    this.store.set(resp.id, resp);
-    logInfo('Attestation response cached', { id: resp.id });
-  }
-}
-
-export const getMemoryStore = (): MemoryStore => MemoryStore.getInstance();
-
-/* ================================================
-   Utility Functions
-================================================ */
-
+// Utility Functions
 export async function createUniqueId(rpId: string, credentialId: string): Promise<string> {
   const data = new TextEncoder().encode(`${rpId}:${credentialId}`);
   const hash = await subtle.digest('SHA-256', data);
   return base64UrlEncode(new Uint8Array(hash));
 }
-
-/* ================================================
-   Private Key Management
-================================================ */
 
 export async function savePrivateKey(
   credentialId: Uint8Array,
@@ -332,69 +230,129 @@ export async function savePrivateKey(
   userIdHash: string,
   userName?: string,
 ): Promise<void> {
-  logInfo('Saving private key');
   const pkcs8 = await subtle.exportKey('pkcs8', privateKey);
+  const key = await getMasterKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encryptedPkcs8 = await subtle.encrypt({ name: 'AES-GCM', iv }, key, pkcs8);
+
   const stored: StoredCredential = {
     uniqueId: await createUniqueId(rpId, base64UrlEncode(credentialId)),
     credentialId: base64UrlEncode(credentialId),
     rpId,
     userIdHash,
-    privateKey: base64UrlEncode(new Uint8Array(pkcs8)),
+    privateKey: base64UrlEncode(new Uint8Array(encryptedPkcs8)),
+    iv: base64UrlEncode(iv),
     userHandle: base64UrlEncode(userId),
     publicKey: base64UrlEncode(cosePublicKey),
     publicKeyAlgorithm,
     counter: 0,
     userName,
     creationTime: Date.now(),
+    isSynced: false,
   };
 
-  const resp = await sendMessageToExtension({ type: 'saveStoredCredential', storedCredential: stored });
-  if (resp?.error) throw new Error(resp.error);
+  await saveStoredCredential(stored);
 }
 
 export async function loadPrivateKey(
   credentialId: string,
 ): Promise<[CryptoKey, SigningAlgorithm, number]> {
-  const resp = await sendMessageToExtension({ type: 'getStoredCredential', credentialId });
-  if (resp?.error) throw new Error(resp.error);
+  const rec = await getStoredCredentialByCredentialId(credentialId);
+  if (!rec) throw new Error('Credential not found');
 
-  const record = resp as StoredCredential;
-  const pkBuf = base64UrlDecode(record.privateKey);
+  const key = await getMasterKey();
+  const pkcs8 = await subtle.decrypt(
+    { name: 'AES-GCM', iv: base64UrlDecode(rec.iv) },
+    key,
+    base64UrlDecode(rec.privateKey),
+  );
 
-  let alg: SigningAlgorithm; let params: any;
-  if (record.publicKeyAlgorithm === -7) {
-    alg = new ES256(); params = { name: 'ECDSA', namedCurve: 'P-256' };
-  } else if (record.publicKeyAlgorithm === -257) {
-    alg = new RS256(); params = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
-  } else if (record.publicKeyAlgorithm === -8) {
-    alg = new Ed25519(); params = { name: 'Ed25519' };
-  } else {
-    throw new Error('Unsupported algorithm');
+  let params: EcKeyImportParams | RsaHashedImportParams | Algorithm;
+  let algObj: SigningAlgorithm;
+
+  switch (rec.publicKeyAlgorithm) {
+    case -7:
+      params = { name: 'ECDSA', namedCurve: 'P-256' };
+      algObj = new ES256();
+      break;
+    case -257:
+      params = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
+      algObj = new RS256();
+      break;
+    case -8:
+      params = { name: 'Ed25519' };
+      algObj = new Ed25519();
+      break;
+    default:
+      throw new Error('Unsupported algorithm');
   }
 
-  const key = await subtle.importKey('pkcs8', pkBuf, params, false, ['sign']);
-  return [key, alg, record.counter];
+  const privKey = await subtle.importKey('pkcs8', pkcs8, params, false, ['sign']);
+  return [privKey, algObj, rec.counter];
 }
 
-/* ================================================
-   Foreground Proxies
-================================================ */
+// Messaging in Background Context
+export async function handleMessageInBackground(message: any): Promise<any> {
+  try {
+    switch (message.type) {
+      case 'saveStoredCredential':
+        await saveStoredCredential(message.storedCredential);
+        return { status: 'ok' };
 
+      case 'getStoredCredential':
+        return (
+          (await getStoredCredentialByCredentialId(message.credentialId)) ?? { error: 'not found' }
+        );
+
+      case 'getAllStoredCredentials':
+        return getAllStoredCredentialsFromDB();
+
+      case 'findCredential': {
+        const list = await getAllStoredCredentialsFromDB();
+        const rp = message.options.publicKey?.rpId ?? new URL(message.options.origin).hostname;
+
+        if (message.selectedCredentialId) {
+          const found = list.find(
+            (c) => c.credentialId === message.selectedCredentialId && c.rpId === rp,
+          );
+          return found ?? { error: 'not found' };
+        }
+
+        if (message.options.allowCredentials?.length) {
+          for (const ac of message.options.allowCredentials) {
+            const id = typeof ac.id === 'string' ? ac.id : base64UrlEncode(new Uint8Array(ac.id));
+            const found = list.find((c) => c.credentialId === id && c.rpId === rp);
+            if (found) return found;
+          }
+        }
+        return list.find((c) => c.rpId === rp) ?? { error: 'not found' };
+      }
+
+      case 'updateCredentialCounter':
+        await updateCredentialCounter(message.credentialId);
+        return { status: 'ok' };
+
+      default:
+        throw new Error(`Unknown message type: ${message.type}`);
+    }
+  } catch (e: any) {
+    logError('[store] background handler error', e);
+    return { error: e?.message ?? String(e) };
+  }
+}
+
+// Foreground Proxies
 export async function findCredential(
   options: any,
   selectedCredentialId?: string,
 ): Promise<StoredCredential> {
-  const resp = await sendMessageToExtension({
-    type: 'findCredential',
-    options,
-    selectedCredentialId,
-  });
-  if (resp?.error) throw new Error(resp.error);
-  return resp as StoredCredential;
+  const r = await sendMessageToExtension({ type: 'findCredential', options, selectedCredentialId });
+  if (r?.error) throw new Error(r.error);
+  return r;
 }
 
 export async function getAllStoredCredentials(): Promise<StoredCredential[]> {
-  const resp = await sendMessageToExtension({ type: 'getAllStoredCredentials' });
-  if (resp?.error) throw new Error(resp.error);
-  return resp as StoredCredential[];
+  const r = await sendMessageToExtension({ type: 'getAllStoredCredentials' });
+  if (r?.error) throw new Error(r.error);
+  return Array.isArray(r) ? r : [];
 }
