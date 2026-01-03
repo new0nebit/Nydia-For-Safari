@@ -1,5 +1,5 @@
-import { base64UrlEncode } from './base64url';
 import { Account, WebAuthnOperationType } from './types';
+import { base64UrlEncode } from './utils/base64url';
 import { toArrayBuffer } from './utils/buffer';
 
 type CreationOptions = CredentialCreationOptions & {
