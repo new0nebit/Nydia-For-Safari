@@ -2,7 +2,6 @@ import {
   createCredential,
   getAvailableCredentials,
   handleGetAssertion,
-  initializeAuthenticator,
 } from './authenticator';
 import { logError, logInfo } from './logger';
 import {
@@ -387,7 +386,6 @@ logInfo('bootstrap');
 logInfo('isBackgroundContext', isBackgroundContext());
 browser.runtime.onMessage.addListener((message: unknown) => router(message as BackgroundMessage));
 
-initializeAuthenticator();
 loadMasterKey().catch(logError);
 
 logInfo('ready');
