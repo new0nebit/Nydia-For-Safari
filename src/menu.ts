@@ -10,7 +10,7 @@ import { getAllStoredCredentialsFromDB } from './store';
 import { StoredCredential } from './types';
 
 type NotificationType = 'success' | 'error' | 'info' | 'warning';
-type ModalType = 'alert' | 'confirm' | 'prompt';
+type ModalType = 'confirm';
 
 interface SyncUploadResult {
   uploadedCount: number;
@@ -143,9 +143,7 @@ function notify(type: NotificationType, title: string, message: string): void {
 function modal(type: ModalType, title: string, message: string): Promise<boolean> {
   return new Promise((resolve) => {
     const iconMap: Record<ModalType, string> = {
-      alert: icons.info,
       confirm: icons.question,
-      prompt: icons.warning,
     };
 
     const overlay = create('div', ['modal-overlay']);
@@ -163,21 +161,16 @@ function modal(type: ModalType, title: string, message: string): Promise<boolean
 
     const buttonWrap = create('div', ['modal-buttons']);
 
-    if (type === 'confirm') {
-      const cancelButton = createButton('', 'Cancel', ['modal-cancel'], () => {
-        overlay.remove();
-        resolve(false);
-      });
-      buttonWrap.appendChild(cancelButton);
-    }
+    const cancelButton = createButton('', 'Cancel', ['modal-cancel'], () => {
+      overlay.remove();
+      resolve(false);
+    });
+    buttonWrap.appendChild(cancelButton);
 
     const confirmButton = createButton('', 'Confirm', ['modal-confirm'], () => {
       overlay.remove();
       resolve(true);
     });
-    if (type !== 'confirm') {
-      setButtonLabel(confirmButton, 'OK');
-    }
     buttonWrap.appendChild(confirmButton);
 
     content.append(header, buttonWrap);
@@ -186,7 +179,7 @@ function modal(type: ModalType, title: string, message: string): Promise<boolean
   });
 }
 
-// Ensures missing indices exist without bumping DB_VERSION
+// Ensures an index exists during DB upgrades (onupgradeneeded/versionchange); idempotent.
 function ensureIndex(
   store: IDBObjectStore,
   name: string,
@@ -215,8 +208,6 @@ function createSiteIcon(rpId: string): HTMLImageElement {
 }
 
 export class Menu {
-  private onboarding?: any;
-
   constructor() {
     setNotificationDisplayer({ showNotification: notify });
     setOnSettingsComplete(() => this.render());
@@ -233,7 +224,7 @@ export class Menu {
       const { OnboardingController } = await import(
         /* webpackChunkName: "onboarding" */ './onboarding'
       );
-      this.onboarding = new OnboardingController(root);
+      new OnboardingController(root);
       return;
     }
 
@@ -421,15 +412,15 @@ export class Menu {
     setButtonLabel(button, 'Backing up…');
 
     try {
-      const response = await browser.runtime.sendMessage({
+      const response = (await browser.runtime.sendMessage({
         type: 'uploadToSia',
         uniqueId: passkey.uniqueId,
-      });
+      })) as { success?: boolean; message?: string; error?: string };
       if (response?.success) {
         passkey.isSynced = true;
         button.classList.replace('button-green', 'button-sync');
         updateButtonContent(button, icons.check, 'Synced');
-        notify('success', 'Success', response.message);
+        notify('success', 'Success', response.message ?? 'Uploaded successfully');
         await this.render();
       } else {
         throw new Error(response?.error ?? 'Upload failed');
@@ -499,10 +490,10 @@ export class Menu {
 
     try {
       const uniqueIds = unsynced.map((credential) => credential.uniqueId);
-      const response = await browser.runtime.sendMessage({
+      const response = (await browser.runtime.sendMessage({
         type: 'uploadUnsyncedPasskeys',
         uniqueIds,
-      });
+      })) as { uploadedCount?: number; failedCount?: number; success?: boolean };
       return {
         uploadedCount: response?.uploadedCount ?? 0,
         failedCount: response?.failedCount ?? 0,
@@ -516,7 +507,11 @@ export class Menu {
 
   private async downloadNew(): Promise<SyncDownloadResult> {
     try {
-      const response = await browser.runtime.sendMessage({ type: 'syncFromSia' });
+      const response = (await browser.runtime.sendMessage({ type: 'syncFromSia' })) as {
+        syncedCount?: number;
+        failedCount?: number;
+        success?: boolean;
+      };
       return {
         syncedCount: response?.syncedCount ?? 0,
         failedCount: response?.failedCount ?? 0,
