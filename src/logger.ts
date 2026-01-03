@@ -1,11 +1,15 @@
-export function logError(message: string, error?: any) {
-  console.error(`[Error] ${message}`, error);
+export function logInfo(message: string, data?: unknown) {
+  if (data !== undefined) {
+    console.info(`[Info] ${message}:`, data);
+  } else {
+    console.info(`[Info] ${message}`);
+  }
 }
 
-export function logInfo(message: string, data?: any) {
-  if (data !== undefined) {
-    console.log(`[Info] ${message}:`, data);
+export function logError(message: string, error?: unknown) {
+  if (error !== undefined) {
+    console.error(`[Error] ${message}`, error);
   } else {
-    console.log(`[Info] ${message}`);
+    console.error(`[Error] ${message}`);
   }
 }
