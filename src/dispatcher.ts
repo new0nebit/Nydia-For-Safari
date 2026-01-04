@@ -170,15 +170,15 @@ class WebAuthnInterceptor {
     if (this.isCreateOptions(options)) {
       const publicKey: PublicKeyCredentialCreationOptions = { ...options.publicKey };
 
-      publicKey.challenge = toArrayBuffer(options.publicKey.challenge);
+      publicKey.challenge = toArrayBuffer(options.publicKey.challenge as ArrayBuffer | Uint8Array);
 
       publicKey.user = { ...options.publicKey.user };
-      publicKey.user.id = toArrayBuffer(options.publicKey.user.id);
+      publicKey.user.id = toArrayBuffer(options.publicKey.user.id as ArrayBuffer | Uint8Array);
 
       if (options.publicKey.excludeCredentials) {
         publicKey.excludeCredentials = options.publicKey.excludeCredentials.map((cred) => ({
           ...cred,
-          id: toArrayBuffer(cred.id),
+          id: toArrayBuffer(cred.id as ArrayBuffer | Uint8Array),
         }));
       }
 
@@ -191,12 +191,12 @@ class WebAuthnInterceptor {
 
     const publicKey: PublicKeyCredentialRequestOptions = { ...options.publicKey };
 
-    publicKey.challenge = toArrayBuffer(options.publicKey.challenge);
+    publicKey.challenge = toArrayBuffer(options.publicKey.challenge as ArrayBuffer | Uint8Array);
 
     if (options.publicKey.allowCredentials) {
       publicKey.allowCredentials = options.publicKey.allowCredentials.map((cred) => ({
         ...cred,
-        id: toArrayBuffer(cred.id),
+        id: toArrayBuffer(cred.id as ArrayBuffer | Uint8Array),
       }));
     }
 
@@ -218,8 +218,8 @@ class WebAuthnInterceptor {
       serializedOptions.publicKey = publicKey;
 
       // Serialize challenge
-      const pkChallenge = options.publicKey.challenge as unknown;
-      if (pkChallenge instanceof ArrayBuffer || ArrayBuffer.isView(pkChallenge)) {
+      const pkChallenge = options.publicKey.challenge;
+      if (pkChallenge instanceof ArrayBuffer || pkChallenge instanceof Uint8Array) {
         publicKey.challenge = base64UrlEncode(pkChallenge);
       }
 
@@ -227,12 +227,12 @@ class WebAuthnInterceptor {
       if (this.isCreateOptions(options) && options.publicKey.user) {
         const user: Record<string, unknown> = { ...options.publicKey.user };
         const userId = options.publicKey.user.id;
-        if (userId instanceof ArrayBuffer || ArrayBuffer.isView(userId)) {
+        if (userId instanceof ArrayBuffer || userId instanceof Uint8Array) {
           user.id = base64UrlEncode(userId);
         } else if (typeof userId === 'string') {
           user.id = userId;
         } else {
-          throw new Error('publicKey.user.id must be an ArrayBuffer, TypedArray, or string');
+          throw new Error('publicKey.user.id must be an ArrayBuffer, Uint8Array, or string');
         }
         publicKey.user = user;
       }
@@ -241,7 +241,7 @@ class WebAuthnInterceptor {
       if (this.isCreateOptions(options) && options.publicKey.excludeCredentials) {
         publicKey.excludeCredentials = options.publicKey.excludeCredentials.map((cred) => ({
           ...cred,
-          id: base64UrlEncode(cred.id),
+          id: base64UrlEncode(cred.id as ArrayBuffer | Uint8Array),
         }));
       }
 
@@ -249,7 +249,7 @@ class WebAuthnInterceptor {
       if (!this.isCreateOptions(options) && options.publicKey.allowCredentials) {
         publicKey.allowCredentials = options.publicKey.allowCredentials.map((cred: PublicKeyCredentialDescriptor) => ({
           ...cred,
-          id: base64UrlEncode(cred.id),
+          id: base64UrlEncode(cred.id as ArrayBuffer | Uint8Array),
         }));
       }
     }
