@@ -57,6 +57,10 @@ export default (env, argv) => {
             },
           ],
         },
+        {
+          test: /\.svg$/,
+          type: 'asset/source',
+        },
       ],
     },
     resolve: {
