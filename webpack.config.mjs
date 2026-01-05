@@ -9,7 +9,7 @@ export default (env, argv) => {
   const isDevelopment = argv.mode === 'development';
   const isAnalyze = env && env.analyze;
   const keepDebugLogs = env?.keepDebug === true || env?.keepDebug === 'true';
-  
+
   // Set output directory
   const outputDir = path.resolve(process.cwd(), 'app/Nydia Extension/Resources');
 
@@ -22,7 +22,7 @@ export default (env, argv) => {
         import: [
           './src/menu.ts',
           './src/settings.ts',
-          './src/styles/main.css'
+          './src/ui/styles/main.css'
         ],
       },
       popup: './src/popup.ts'
