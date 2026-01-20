@@ -18,20 +18,6 @@ const subtle = crypto.subtle;
 // Simple per-credential mutex to avoid race conditions during counter updates
 const counterLocks: Map<string, Promise<void>> = new Map();
 
-// Check background context
-export function isBackgroundContext(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    window.location.href === browser.runtime.getURL('background.html')
-  );
-}
-
-async function sendMessageToExtension<T = unknown>(msg: BackgroundMessage): Promise<T> {
-  return isBackgroundContext()
-    ? ((handleMessageInBackground(msg) as unknown) as Promise<T>)
-    : (browser.runtime.sendMessage(msg) as Promise<T>);
-}
-
 type FindCredentialOptions = SerializedRequestOptions | GetAssertionOptions;
 
 // Helper function to extract rpId from various option formats
@@ -419,24 +405,24 @@ export async function handleMessageInBackground(message: BackgroundMessage): Pro
   }
 }
 
-// Foreground Proxies
+// Background proxy helpers
 export async function findCredential(
   options: SerializedRequestOptions | GetAssertionOptions,
   selectedCredentialId?: string,
 ): Promise<StoredCredential> {
-  const response = await sendMessageToExtension<StoredCredential | { error: string }>({
+  const response = await handleMessageInBackground({
     type: 'findCredential',
     options,
     selectedCredentialId,
-  });
+  }) as StoredCredential | { error: string };
   if ('error' in response) throw new Error(response.error);
   return response;
 }
 
 export async function getAllStoredCredentials(): Promise<StoredCredential[]> {
-  const response = await sendMessageToExtension<StoredCredential[] | { error: string }>({
+  const response = await handleMessageInBackground({
     type: 'getAllStoredCredentials',
-  });
+  }) as StoredCredential[] | { error: string };
   if (!Array.isArray(response)) {
     if ('error' in response) throw new Error(response.error);
     return [];
