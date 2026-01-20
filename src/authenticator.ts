@@ -162,9 +162,9 @@ export async function createCredential(
     } else if (options.publicKey.user.id instanceof ArrayBuffer) {
       userId = toArrayBuffer(options.publicKey.user.id);
       logAuth('userId is ArrayBuffer');
-    } else if (ArrayBuffer.isView(options.publicKey.user.id)) {
+    } else if (options.publicKey.user.id instanceof Uint8Array) {
       userId = toArrayBuffer(options.publicKey.user.id);
-      logAuth('userId is ArrayBufferView');
+      logAuth('userId is Uint8Array');
     } else {
       logAuth(`Invalid user.id type: ${typeof options.publicKey.user.id}`);
       throw new Error('Invalid user.id type');
