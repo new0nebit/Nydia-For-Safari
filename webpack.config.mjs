@@ -8,6 +8,7 @@ import CopyWebpackPlugin from 'copy-webpack-plugin';
 export default (env, argv) => {
   const isDevelopment = argv.mode === 'development';
   const isAnalyze = env && env.analyze;
+  const keepDebugLogs = env?.keepDebug === true || env?.keepDebug === 'true';
   
   // Set output directory
   const outputDir = path.resolve(process.cwd(), 'app/Nydia Extension/Resources');
@@ -90,6 +91,14 @@ export default (env, argv) => {
         new TerserPlugin({
           extractComments: false,
           terserOptions: {
+            ...(keepDebugLogs
+              ? {}
+              : {
+                  compress: {
+                    // Drop debug logging in production builds while keeping info/warn/error.
+                    pure_funcs: ['console.debug'],
+                  },
+                }),
             format: {
               comments: false,
             },

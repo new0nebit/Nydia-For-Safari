@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "build": "webpack --mode production",
+    "debug": "webpack --mode production --env keepDebug=true",
     "dev": "webpack --watch --mode development",
     "lint": "eslint 'src/**/*.{js,ts}'",
     "analyze": "webpack --mode production --env analyze"
