@@ -222,8 +222,8 @@ async function testConnection(form: HTMLFormElement) {
     }
 
     notificationDisplayer.showNotification('success', 'Success!', 'Connection successful.');
-  } catch (error: any) {
-    if (error.name === 'AbortError') {
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
       notificationDisplayer.showNotification(
         'error',
         'Error!',
