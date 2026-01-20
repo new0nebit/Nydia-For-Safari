@@ -1,3 +1,4 @@
+import { logDebug, logInfo } from './logger';
 import { Account, WebAuthnOperationType } from './types';
 import { toArrayBuffer } from './utils/buffer';
 import { base64UrlEncode } from './utils/base64url';
@@ -54,10 +55,10 @@ class WebAuthnInterceptor {
     options: CreationOptions | RequestOptions,
     type: WebAuthnOperationType,
   ): Promise<PublicKeyCredential | null> {
-    this.logDebug(`Intercepting WebAuthn operation: ${type}`);
+    logDebug(`[Dispatcher] Intercepting WebAuthn operation: ${type}`);
 
     if (!options || typeof options !== 'object') {
-      this.logDebug(`Invalid options for ${type}`, options);
+      logDebug(`[Dispatcher] Invalid options for ${type}`, options);
       throw new DOMException('Invalid options', 'NotAllowedError');
     }
 
@@ -66,7 +67,7 @@ class WebAuthnInterceptor {
       type === 'create' ? this.createAbortController : this.getAbortController;
 
     if (abortController) {
-      this.logDebug(`Aborting previous ${type} operation`);
+      logDebug(`[Dispatcher] Aborting previous ${type} operation`);
       abortController.abort();
     }
 
@@ -81,8 +82,8 @@ class WebAuthnInterceptor {
     try {
       // Clean and prepare options
       const cleanedOptions = this.cleanOptions(options);
-      this.logDebug(
-        `Options for PublicKeyCredential${type === 'create' ? 'Creation' : 'Request'}Options`,
+      logDebug(
+        `[Dispatcher] Options for PublicKeyCredential${type === 'create' ? 'Creation' : 'Request'}Options`,
         cleanedOptions,
       );
 
@@ -92,7 +93,7 @@ class WebAuthnInterceptor {
       // If operation is 'get', fetch available credentials
       if (type === 'get') {
         accounts = await this.getAvailableCredentials(rpId);
-        this.logDebug('Available accounts', accounts);
+        logDebug('[Dispatcher] Available accounts', accounts);
       }
 
       // Display the custom popup for user interaction
@@ -114,7 +115,7 @@ class WebAuthnInterceptor {
 
       // Handle popup closure or errors
       if (result === 'closed') {
-        this.logDebug(`Popup closed, reverting to standard WebAuthn ${type} flow`);
+        logDebug(`[Dispatcher] Popup closed, reverting to standard WebAuthn ${type} flow`);
         return null;
       }
 
@@ -133,13 +134,9 @@ class WebAuthnInterceptor {
       );
       return credential;
     } catch (error: unknown) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        this.logDebug(`WebAuthn ${type} operation was aborted`);
-        throw error;
-      } else {
-        this.logDebug(`Error in WebAuthn ${type} operation`, error);
-        throw error;
-      }
+      const isAbort = error instanceof DOMException && error.name === 'AbortError';
+      logDebug(`[Dispatcher] WebAuthn ${type} operation ${isAbort ? 'was aborted' : 'failed'}`, error);
+      throw error;
     } finally {
       // Reset the AbortController
       if (type === 'create') {
@@ -263,7 +260,7 @@ class WebAuthnInterceptor {
   // Handles the passkey save operation (create).
   async handlePasskeySave(options: CreationOptions): Promise<unknown> {
     try {
-      this.logDebug('Handling passkey save operation', options);
+      logDebug('[Dispatcher] Handling passkey save operation', options);
 
       // Serialize options
       const serializedOptions = this.serializeOptions(options);
@@ -278,7 +275,7 @@ class WebAuthnInterceptor {
       }
       return response;
     } catch (error: unknown) {
-      this.logDebug('Error creating passkey', error);
+      logDebug('[Dispatcher] Error creating passkey', error);
       throw error;
     }
   }
@@ -286,7 +283,7 @@ class WebAuthnInterceptor {
   // Handles the get assertion operation.
   async handleGetAssertion(options: RequestOptions, selectedCredentialId?: string): Promise<unknown> {
     try {
-      this.logDebug('Handling get assertion operation', {
+      logDebug('[Dispatcher] Handling get assertion operation', {
         options,
         selectedCredentialId,
       });
@@ -305,7 +302,7 @@ class WebAuthnInterceptor {
       }
       return response;
     } catch (error: unknown) {
-      this.logDebug('Error creating assertion', error);
+      logDebug('[Dispatcher] Error creating assertion', error);
       throw error;
     }
   }
@@ -313,7 +310,7 @@ class WebAuthnInterceptor {
   // Retrieves available credentials for the given RP ID.
   private async getAvailableCredentials(rpId: string): Promise<Account[]> {
     try {
-      this.logDebug('Getting available credentials for rpId', rpId);
+      logDebug('[Dispatcher] Getting available credentials for rpId', rpId);
       const response = (await browser.runtime.sendMessage({
         type: 'getAvailableCredentials',
         rpId,
@@ -324,7 +321,7 @@ class WebAuthnInterceptor {
       }
       return [];
     } catch (error: unknown) {
-      this.logDebug('Error getting available credentials', error);
+      logDebug('[Dispatcher] Error getting available credentials', error);
       return [];
     }
   }
@@ -334,7 +331,7 @@ class WebAuthnInterceptor {
     parsedResponse: Record<string, unknown>,
     type: WebAuthnOperationType,
   ): Promise<PublicKeyCredential> {
-    console.debug('[Dispatcher] Processing authenticator response:', parsedResponse);
+    logDebug('[Dispatcher] Processing authenticator response', parsedResponse);
 
     if (!parsedResponse.type || !parsedResponse.id || !parsedResponse.response) {
       throw new Error('Invalid response format');
@@ -393,14 +390,6 @@ class WebAuthnInterceptor {
     } as PublicKeyCredential;
   }
 
-  // Logs debug messages with consistent formatting.
-  logDebug(message: string, data?: unknown): void {
-    if (data !== undefined) {
-      console.debug(`[WebAuthnInterceptor] ${message}:`, data);
-    } else {
-      console.debug(`[WebAuthnInterceptor] ${message}`);
-    }
-  }
 }
 
 // Initialize the interceptor
@@ -461,7 +450,7 @@ window.addEventListener('message', async (event) => {
       }
     } catch (error: unknown) {
       const messageText = error instanceof Error ? error.message : String(error);
-      interceptor.logDebug('Error handling WebAuthn create', error);
+      logDebug('[Dispatcher] Error handling WebAuthn create', error);
       window.postMessage({ type: 'webauthn-create-error', error: messageText }, '*');
     }
   } else if (message && message.type === 'webauthn-get') {
@@ -494,10 +483,10 @@ window.addEventListener('message', async (event) => {
       }
     } catch (error: unknown) {
       const messageText = error instanceof Error ? error.message : String(error);
-      interceptor.logDebug('Error handling WebAuthn get', error);
+      logDebug('[Dispatcher] Error handling WebAuthn get', error);
       window.postMessage({ type: 'webauthn-get-error', error: messageText }, '*');
     }
   }
 });
 
-console.info('WebAuthn content script fully initialized');
+logInfo('[Dispatcher] WebAuthn content script fully initialized');

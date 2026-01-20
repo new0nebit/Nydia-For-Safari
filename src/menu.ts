@@ -1,4 +1,5 @@
 import { icons } from './icons';
+import { logError } from './logger';
 import {
   getSettings,
   setNotificationDisplayer,
@@ -272,7 +273,7 @@ export class Menu {
         });
       }
     } catch (err) {
-      console.error('render error:', err);
+      logError('[Menu] render error', err);
       notify('error', 'Error', 'Failed to load passkeys.');
     }
   }
@@ -401,7 +402,7 @@ export class Menu {
       };
       tx.onerror = () => notify('error', 'Error', 'Failed to delete passkey.');
     } catch (err) {
-      console.error('remove error:', err);
+      logError('[Menu] remove error', err);
       notify('error', 'Error', 'Failed to delete passkey.');
     }
   }
@@ -426,7 +427,7 @@ export class Menu {
         throw new Error(response?.error ?? 'Upload failed');
       }
     } catch (err) {
-      console.error('backup error:', err);
+      logError('[Menu] backup error', err);
       notify('error', 'Error', String(err));
       updateButtonContent(
         button,
@@ -476,7 +477,7 @@ export class Menu {
       notify(type, type.charAt(0).toUpperCase() + type.slice(1), message);
       await this.render();
     } catch (err) {
-      console.error('sync error:', err);
+      logError('[Menu] sync error', err);
       notify('error', 'Error', 'Error syncing Passkeys with renterd server.');
     } finally {
       resetSyncButton(button);
@@ -500,7 +501,7 @@ export class Menu {
         error: !response?.success,
       };
     } catch (err) {
-      console.error('uploadUnsynced error:', err);
+      logError('[Menu] uploadUnsynced error', err);
       return { uploadedCount: 0, failedCount: unsynced.length, error: true };
     }
   }
@@ -519,7 +520,7 @@ export class Menu {
         error: !response?.success,
       };
     } catch (err) {
-      console.error('downloadNew error:', err);
+      logError('[Menu] downloadNew error', err);
       return { syncedCount: 0, failedCount: 0, empty: true, error: true };
     }
   }
