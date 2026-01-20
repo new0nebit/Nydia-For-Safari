@@ -1,5 +1,4 @@
 import { Ed25519, ES256, RS256, SigningAlgorithm } from './algorithms';
-import { base64UrlDecode, base64UrlEncode } from './base64url';
 import { logError } from './logger';
 import { uploadPasskeyDirect } from './sia';
 import {
@@ -11,6 +10,7 @@ import {
   SerializedRequestOptions,
   StoredCredential,
 } from './types';
+import { base64UrlDecode, base64UrlEncode } from './utils/base64url';
 import { toArrayBuffer } from './utils/buffer';
 
 // Web Crypto API
