@@ -1,6 +1,6 @@
 import { Account, WebAuthnOperationType } from './types';
-import { base64UrlEncode } from './utils/base64url';
 import { toArrayBuffer } from './utils/buffer';
+import { base64UrlEncode } from './utils/base64url';
 
 type CreationOptions = CredentialCreationOptions & {
   publicKey: PublicKeyCredentialCreationOptions;
@@ -36,14 +36,8 @@ script.onload = () => {
 
 // Class responsible for intercepting and handling WebAuthn operations.
 class WebAuthnInterceptor {
-  private interceptEnabled = true;
   private createAbortController: AbortController | null = null;
   private getAbortController: AbortController | null = null;
-
-  // Determines whether to intercept the WebAuthn operation.
-  async shouldIntercept(): Promise<boolean> {
-    return this.interceptEnabled;
-  }
 
   // Intercepts navigator.credentials.create() calls.
   async interceptCreate(options: CreationOptions): Promise<PublicKeyCredential | null> {
@@ -424,11 +418,7 @@ window.addEventListener('message', async (event) => {
   if (message && message.type === 'webauthn-create') {
     // Handle navigator.credentials.create()
     try {
-      if (
-        (await interceptor.shouldIntercept()) &&
-        message.options &&
-        typeof message.options === 'object'
-      ) {
+      if (message.options && typeof message.options === 'object') {
         const opts = message.options as CreationOptions;
         const credential = await interceptor.interceptCreate(opts);
         if (credential === null) {
@@ -477,11 +467,7 @@ window.addEventListener('message', async (event) => {
   } else if (message && message.type === 'webauthn-get') {
     // Handle navigator.credentials.get()
     try {
-      if (
-        (await interceptor.shouldIntercept()) &&
-        message.options &&
-        typeof message.options === 'object'
-      ) {
+      if (message.options && typeof message.options === 'object') {
         const opts = message.options as RequestOptions;
         const credential = await interceptor.interceptGet(opts);
         if (credential === null) {
