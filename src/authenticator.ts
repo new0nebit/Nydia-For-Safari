@@ -5,6 +5,7 @@ import {
   createUniqueId,
   findCredential,
   getAllStoredCredentials,
+  getEncryptedCredentialByUniqueId,
   loadPrivateKey,
   savePrivateKey,
   updateCredentialCounter,
@@ -33,7 +34,7 @@ const AAGUID: Uint8Array = new Uint8Array([
   0x79, 0x64, 0x69, 0x61
 ]);
 
-// Hash data using SHA-256 algorithm.
+// SHA-256 helper
 async function sha256(data: ArrayBuffer | Uint8Array): Promise<ArrayBuffer> {
   return await subtle.digest('SHA-256', toArrayBuffer(data));
 }
@@ -105,7 +106,7 @@ function rawToDer(rawSignature: ArrayBuffer): ArrayBuffer {
   return derSignature.buffer;
 }
 
-// Chooses a signing algorithm.
+// Chooses a signing algorithm
 function chooseAlgorithm(
   params: PublicKeyCredentialCreationOptions['pubKeyCredParams'],
 ): SigningAlgorithm {
@@ -127,14 +128,14 @@ function chooseAlgorithm(
   throw new Error('No supported algorithm found');
 }
 
-// Convert buffer to hexadecimal string.
+// Convert buffer to hexadecimal string
 function bufferToHex(buffer: Uint8Array): string {
   return Array.from(buffer)
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 }
 
-// Get algorithm name for logging.
+// Get algorithm name for logging
 type AlgorithmName = 'ES256' | 'RS256' | 'Ed25519';
 
 function getAlgorithmName(algorithm: SigningAlgorithm): AlgorithmName {
@@ -143,10 +144,10 @@ function getAlgorithmName(algorithm: SigningAlgorithm): AlgorithmName {
   return 'Ed25519';
 }
 
-// Create a new credential.
+// Create a new credential
 export async function createCredential(
   options: CredentialCreationOptions,
-): Promise<AttestationResponse | null> {
+): Promise<AttestationResponse> {
   logInfo('[Authenticator] Starting credential creation...');
   logDebug('[Authenticator] Options', options);
 
@@ -186,13 +187,15 @@ export async function createCredential(
     const userIdHash = base64UrlEncode(userIdHashBuffer);
     logDebug('[Authenticator] userIdHash generated', userIdHash);
 
-    // Check for existing credentials
-    const storedCredentials = await getAllStoredCredentials();
-    const existingCredential = storedCredentials.find((cred) => cred.userIdHash === userIdHash);
-
-    if (existingCredential) {
-      logWarn('[Authenticator] Existing credential found - aborting creation', { rpId });
-      return null;
+    // Check excludeCredentials
+    const excludeList = options.publicKey.excludeCredentials ?? [];
+    for (const descriptor of excludeList) {
+      const descriptorId = base64UrlEncode(toArrayBuffer(descriptor.id as ArrayBuffer));
+      const uniqueId = await createUniqueId(rpId, descriptorId);
+      if (await getEncryptedCredentialByUniqueId(uniqueId)) {
+        logDebug('[Authenticator] excludeCredentials match found - aborting creation', { rpId, credentialId: descriptorId, uniqueId });
+        throw new DOMException('A passkey for this account already exists.', 'InvalidStateError');
+      }
     }
 
     // Generate key pair
@@ -205,14 +208,13 @@ export async function createCredential(
     const credentialIdEncoded = base64UrlEncode(credentialId);
     logDebug('[Authenticator] Credential ID generated', credentialIdEncoded);
 
-    // Determine public key algorithm identifier
+    // Determine COSE algorithm identifier
     let publicKeyAlgorithm: number;
     if (algorithm instanceof ES256) {
       publicKeyAlgorithm = -7;
     } else if (algorithm instanceof RS256) {
       publicKeyAlgorithm = -257;
     } else {
-      // Ed25519
       publicKeyAlgorithm = -8;
     }
     logDebug('[Authenticator] Public key algorithm', publicKeyAlgorithm);
@@ -260,7 +262,7 @@ export async function createCredential(
 
     // Create authenticator data
     const rpIdHash = new Uint8Array(await sha256(new TextEncoder().encode(rpId)));
-    const flags = 0x45; // UP=1 (User Present), UV=1 (User Verified), AT=1 (Attested Credential Data Present)
+    const flags = 0x45; // UP=1 (User Present), UV=1 (User Verified), AT=1 (Attested Credential Data)
     const signCount = new Uint8Array([0x00, 0x00, 0x00, 0x00]); // Initial sign count
     const credentialIdLength = new Uint8Array([
       (credentialId.length >> 8) & 0xff,
@@ -341,7 +343,9 @@ export async function createCredential(
     return createResponse;
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logError(`[Authenticator] Error in createCredential: ${errorMessage}`, error);
+    if (!(error instanceof DOMException && error.name === 'InvalidStateError')) {
+      logError(`[Authenticator] Error in createCredential: ${errorMessage}`, error);
+    }
     throw error;
   }
 }
@@ -436,7 +440,7 @@ export async function handleGetAssertion(
 
   logDebug('[Authenticator] Constructed signatureBase (hex)', bufferToHex(signatureBase));
 
-  // Generate signature
+  // Generate signature based on algorithm
   let signature: ArrayBuffer;
 
   if (algorithm instanceof ES256) {
@@ -452,7 +456,6 @@ export async function handleGetAssertion(
     signature = rawToDer(rawSignature);
     logDebug('[Authenticator] Converted signature to DER format');
 
-    // Log signature details
     const signatureBytes = new Uint8Array(signature);
     logDebug('[Authenticator] Signature length after DER conversion', signatureBytes.length);
     logDebug('[Authenticator] Signature (DER hex)', bufferToHex(signatureBytes));
@@ -467,18 +470,13 @@ export async function handleGetAssertion(
       logDebug('[Authenticator] Signature does not appear to be DER-encoded');
     }
   } else if (algorithm instanceof RS256) {
-    // Generate signature
     signature = await subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, secretKey, signatureBase);
     logDebug('[Authenticator] Generated signature using RS256');
 
-    // Log signature details
     const signatureBytes = new Uint8Array(signature);
     logDebug('[Authenticator] Signature length', signatureBytes.length);
     logDebug('[Authenticator] Signature (hex)', bufferToHex(signatureBytes));
   } else {
-    // Ed25519 (or EdDSA)
-    // Some browsers may not support Ed25519 in subtle.sign.
-    // If supported, it would look like:
     signature = await subtle.sign({ name: 'Ed25519' }, secretKey, signatureBase);
     logDebug('[Authenticator] Generated signature using Ed25519');
 
