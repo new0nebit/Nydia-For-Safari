@@ -1,5 +1,5 @@
 import { icons } from './ui/icons/menu';
-import { logError } from './logger';
+import { logError, logWarn } from './logger';
 import {
   getSettings,
   setNotificationDisplayer,
@@ -7,8 +7,8 @@ import {
   showSettingsForm,
   validateSettings,
 } from './settings';
-import { getAllStoredCredentialsFromDB, openDB, STORE_NAME } from './store';
-import { StoredCredential } from './types';
+import { getAllCredentialsMetadata, openDB, STORE_NAME } from './store';
+import { CredentialMetadata } from './types';
 
 type NotificationType = 'success' | 'error' | 'info' | 'warning';
 type ModalType = 'confirm';
@@ -23,6 +23,18 @@ interface SyncDownloadResult {
   failedCount: number;
   empty: boolean;
   error: boolean;
+}
+
+function isCredentialMetadata(value: unknown): value is CredentialMetadata {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.uniqueId === 'string' &&
+    typeof record.rpId === 'string' &&
+    typeof record.creationTime === 'number' &&
+    typeof record.isSynced === 'boolean' &&
+    (record.userName === undefined || typeof record.userName === 'string')
+  );
 }
 
 // Domain Sanitisation
@@ -78,7 +90,7 @@ function createButton(
   iconSvg: string,
   label: string,
   classes: string[],
-  handler: (button: HTMLButtonElement) => void,
+  handler: (button: HTMLButtonElement) => void | Promise<void>,
 ): HTMLButtonElement {
   const button = create('button', classes);
   appendSvgTo(button, iconSvg);
@@ -86,7 +98,7 @@ function createButton(
 
   button.addEventListener('click', (e) => {
     e.stopPropagation();
-    handler(button);
+    void Promise.resolve(handler(button)).catch(() => {});
   });
 
   return button;
@@ -231,15 +243,15 @@ export class Menu {
 
   constructor() {
     setNotificationDisplayer({ showNotification: notify });
-    setOnSettingsComplete(() => this.render());
+    setOnSettingsComplete(() => {
+      void this.render();
+    });
 
-    document.addEventListener('DOMContentLoaded', async () => {
-      try {
-        await this.init();
-      } catch (err) {
-        logError('[Menu] init error', err);
+    document.addEventListener('DOMContentLoaded', () => {
+      void this.init().catch((error: unknown) => {
+        logError('[Menu] init error', error);
         notify('error', 'Error', 'Failed to initialize menu');
-      }
+      });
     });
   }
 
@@ -273,11 +285,20 @@ export class Menu {
       if (!passkeyList) return;
 
       const [credentialsRaw, settings] = await Promise.all([
-        getAllStoredCredentialsFromDB().catch(() => []),
+        getAllCredentialsMetadata().catch(() => []),
         getSettings(),
       ]);
 
-      const credentials = Array.isArray(credentialsRaw) ? credentialsRaw : [];
+      const credentials = Array.isArray(credentialsRaw)
+        ? credentialsRaw.filter(isCredentialMetadata)
+        : [];
+      if (Array.isArray(credentialsRaw) && credentials.length !== credentialsRaw.length) {
+        logWarn('[Menu] Dropped invalid credential metadata entries', {
+          received: credentialsRaw.length,
+          kept: credentials.length,
+          dropped: credentialsRaw.length - credentials.length,
+        });
+      }
       credentials.sort((a, b) => (b.creationTime ?? 0) - (a.creationTime ?? 0));
 
       if (!document.querySelector('.header-container')) {
@@ -307,8 +328,8 @@ export class Menu {
           action: () => showSettingsForm(),
         });
       }
-    } catch (err) {
-      logError('[Menu] render error', err);
+    } catch (error) {
+      logError('[Menu] render error', error);
       notify('error', 'Error', 'Failed to load passkeys.');
     } finally {
       this.isRendering = false;
@@ -401,7 +422,7 @@ export class Menu {
         }
       }),
       createButton(icons.settings, 'Renterd Settings', ['menu-item'], () => {
-        showSettingsForm();
+        void showSettingsForm();
         toggle();
       }),
     );
@@ -418,7 +439,7 @@ export class Menu {
       icon: string;
       label: string;
       buttonClass: string;
-      action: (button: HTMLButtonElement) => void;
+      action: (button: HTMLButtonElement) => void | Promise<void>;
     },
   ): void {
     const box = create('div', ['centered-container']);
@@ -440,7 +461,7 @@ export class Menu {
     parent.appendChild(box);
   }
 
-  private passkeyItem(passkey: StoredCredential): HTMLLIElement {
+  private passkeyItem(passkey: CredentialMetadata): HTMLLIElement {
     const listItem = create('li', ['passkey-item']);
 
     const site = create('div', ['site-info']);
@@ -484,13 +505,13 @@ export class Menu {
         this.render();
       };
       tx.onerror = () => notify('error', 'Error', 'Failed to delete passkey.');
-    } catch (err) {
-      logError('[Menu] remove error', err);
+    } catch (error) {
+      logError('[Menu] remove error', error);
       notify('error', 'Error', 'Failed to delete passkey.');
     }
   }
 
-  private async backup(passkey: StoredCredential, button: HTMLButtonElement): Promise<void> {
+  private async backup(passkey: CredentialMetadata, button: HTMLButtonElement): Promise<void> {
     button.disabled = true;
     button.classList.add('uploading');
     setButtonLabel(button, 'Backing up…');
@@ -509,9 +530,9 @@ export class Menu {
       } else {
         throw new Error(response?.error ?? 'Upload failed');
       }
-    } catch (err) {
-      logError('[Menu] backup error', err);
-      notify('error', 'Error', String(err));
+    } catch (error) {
+      logError('[Menu] backup error', error);
+      notify('error', 'Error', String(error));
       updateButtonContent(
         button,
         passkey.isSynced ? icons.check : icons.sia,
@@ -559,8 +580,8 @@ export class Menu {
 
       notify(type, type.charAt(0).toUpperCase() + type.slice(1), message);
       await this.render();
-    } catch (err) {
-      logError('[Menu] sync error', err);
+    } catch (error) {
+      logError('[Menu] sync error', error);
       notify('error', 'Error', 'Error syncing Passkeys with renterd server.');
     } finally {
       resetSyncButton(button);
@@ -568,7 +589,7 @@ export class Menu {
   }
 
   private async uploadUnsynced(): Promise<SyncUploadResult> {
-    const all = await getAllStoredCredentialsFromDB();
+    const all = await getAllCredentialsMetadata();
     const unsynced = all.filter((credential) => !credential.isSynced);
     if (!unsynced.length) return { uploadedCount: 0, failedCount: 0, error: false };
 
@@ -583,8 +604,8 @@ export class Menu {
         failedCount: response?.failedCount ?? 0,
         error: !response?.success,
       };
-    } catch (err) {
-      logError('[Menu] uploadUnsynced error', err);
+    } catch (error) {
+      logError('[Menu] uploadUnsynced error', error);
       return { uploadedCount: 0, failedCount: unsynced.length, error: true };
     }
   }
@@ -602,8 +623,8 @@ export class Menu {
         empty: !response?.syncedCount && !response?.failedCount,
         error: !response?.success,
       };
-    } catch (err) {
-      logError('[Menu] downloadNew error', err);
+    } catch (error) {
+      logError('[Menu] downloadNew error', error);
       return { syncedCount: 0, failedCount: 0, empty: true, error: true };
     }
   }
