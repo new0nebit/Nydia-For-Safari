@@ -7,7 +7,6 @@ import {
   showSettingsForm,
   validateSettings,
 } from './settings';
-import { getAllCredentialsMetadata, openDB, STORE_NAME } from './store';
 import { CredentialMetadata } from './types';
 
 type NotificationType = 'success' | 'error' | 'info' | 'warning';
@@ -285,7 +284,7 @@ export class Menu {
       if (!passkeyList) return;
 
       const [credentialsRaw, settings] = await Promise.all([
-        getAllCredentialsMetadata().catch(() => []),
+        browser.runtime.sendMessage({ type: 'getAllCredentialsMetadata' }).catch(() => []),
         getSettings(),
       ]);
 
@@ -498,13 +497,13 @@ export class Menu {
       return;
 
     try {
-      const db = await openDB();
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).delete(uniqueId).onsuccess = () => {
-        notify('success', 'Deleted', 'Passkey deleted successfully.');
-        this.render();
-      };
-      tx.onerror = () => notify('error', 'Error', 'Failed to delete passkey.');
+      const response = (await browser.runtime.sendMessage({
+        type: 'deleteCredential',
+        uniqueId,
+      })) as { status?: string; error?: string };
+      if (response?.error) throw new Error(response.error);
+      notify('success', 'Deleted', 'Passkey deleted successfully.');
+      await this.render();
     } catch (error) {
       logError('[Menu] remove error', error);
       notify('error', 'Error', 'Failed to delete passkey.');
@@ -589,7 +588,7 @@ export class Menu {
   }
 
   private async uploadUnsynced(): Promise<SyncUploadResult> {
-    const all = await getAllCredentialsMetadata();
+    const all = (await browser.runtime.sendMessage({ type: 'getAllCredentialsMetadata' })) as CredentialMetadata[];
     const unsynced = all.filter((credential) => !credential.isSynced);
     if (!unsynced.length) return { uploadedCount: 0, failedCount: 0, error: false };
 

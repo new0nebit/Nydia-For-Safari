@@ -1,4 +1,3 @@
-import { getSettings as storeGetSettings, saveSettings as storeSaveSettings } from './store';
 import { RenterdSettings } from './types';
 import { icons } from './ui/icons/menu';
 
@@ -49,14 +48,14 @@ let notificationDisplayer: NotificationDisplayer = {
   },
 };
 
-// Function to set notification handler
+// Set notification handler
 export function setNotificationDisplayer(displayer: NotificationDisplayer) {
   notificationDisplayer = displayer;
 }
 
-// Get settings from IndexedDB (through store)
+// Get settings
 export async function getSettings(): Promise<RenterdSettings | null> {
-  return await storeGetSettings();
+  return (await browser.runtime.sendMessage({ type: 'getSettings' })) as RenterdSettings | null;
 }
 
 // Validate settings fields
@@ -298,6 +297,7 @@ async function saveSettingsFromForm(form: HTMLFormElement) {
     settings.serverProtocol = prev?.serverProtocol;
   }
 
-  await storeSaveSettings(settings);
+  const result = (await browser.runtime.sendMessage({ type: 'saveSettings', settings })) as { status?: string; error?: string };
+  if (result?.error) throw new Error(result.error);
   notificationDisplayer.showNotification('success', 'Success!', 'Settings saved successfully.');
 }
