@@ -1,4 +1,3 @@
-import { Ed25519, ES256, RS256, SigningAlgorithm } from './algorithms';
 import { logDebug, logError, logWarn } from './logger';
 import { uploadPasskeyDirect } from './sia';
 import {
@@ -235,13 +234,13 @@ export async function getSettings(): Promise<RenterdSettings | null> {
 
 // Stored Credential Management
 export async function saveCredential(credential: StoredCredential): Promise<void> {
-  const enc = await encryptCredential(credential);
+  const encryptedRecord = await encryptCredential(credential);
   const db = await openDB();
   await new Promise<void>((resolve) => {
     db
       .transaction(STORE_NAME, 'readwrite')
       .objectStore(STORE_NAME)
-      .put(enc).onsuccess = () => resolve();
+      .put(encryptedRecord).onsuccess = () => resolve();
   });
 }
 
@@ -394,38 +393,6 @@ export async function savePrivateKey(
   await saveCredential(stored);
 }
 
-export async function loadPrivateKey(
-  credentialId: string,
-): Promise<[CryptoKey, SigningAlgorithm, number]> {
-  const credential = await getStoredCredentialByCredentialId(credentialId);
-  if (!credential) throw new Error('Credential not found');
-
-  const pkcs8 = new Uint8Array(base64UrlDecode(credential.privateKey));
-
-  let algorithmParams: EcKeyImportParams | RsaHashedImportParams | Algorithm;
-  let signingAlgorithm: SigningAlgorithm;
-
-  switch (credential.publicKeyAlgorithm) {
-    case -7:
-      algorithmParams = { name: 'ECDSA', namedCurve: 'P-256' };
-      signingAlgorithm = new ES256();
-      break;
-    case -257:
-      algorithmParams = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' };
-      signingAlgorithm = new RS256();
-      break;
-    case -8:
-      algorithmParams = { name: 'Ed25519' };
-      signingAlgorithm = new Ed25519();
-      break;
-    default:
-      throw new Error('Unsupported algorithm');
-  }
-
-  const privateKey = await subtle.importKey('pkcs8', pkcs8, algorithmParams, false, ['sign']);
-  return [privateKey, signingAlgorithm, credential.counter];
-}
-
 // Messaging in Background Context
 export async function handleMessageInBackground(message: BackgroundMessage): Promise<unknown> {
   try {
@@ -496,10 +463,10 @@ export async function handleMessageInBackground(message: BackgroundMessage): Pro
         if (typeof message.uniqueId !== 'string') return { error: 'Invalid uniqueId' };
         const db = await openDB();
         await new Promise<void>((resolve, reject) => {
-          const tx = db.transaction(STORE_NAME, 'readwrite');
-          tx.objectStore(STORE_NAME).delete(message.uniqueId!);
-          tx.oncomplete = () => resolve();
-          tx.onerror = () => reject(tx.error ?? new Error('Failed to delete credential'));
+          const transaction = db.transaction(STORE_NAME, 'readwrite');
+          transaction.objectStore(STORE_NAME).delete(message.uniqueId!);
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error ?? new Error('Failed to delete credential'));
         });
         return { status: 'ok' };
       }
