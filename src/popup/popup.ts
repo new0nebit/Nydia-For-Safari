@@ -87,7 +87,7 @@ function showError(state: PopupState, message: string): void {
   const existingError = state.content.querySelector('.nydia-popup-error');
   if (existingError) existingError.remove();
 
-  const text = message === 'masterKeyMissing'
+  const text = message === 'rootKeyMissing'
     ? 'Nydia is not set up yet.\nSet up a recovery phrase to start using passkeys.'
     : message;
   const errorMessage = createElement('div', 'nydia-popup-error', text);
@@ -120,7 +120,7 @@ function initPopup(sessionId: string, payload: PopupInitPayload, port: MessagePo
   const headerLeft = createElement('div', 'nydia-popup-header-left');
 
   const logoBox = createElement('div', 'nydia-popup-logo');
-  const logoImg = createElement('img') as HTMLImageElement;
+  const logoImg = createElement('img');
   logoImg.src = browser.runtime.getURL('icon.png');
   logoImg.alt = 'Nydia logo';
   logoBox.appendChild(logoImg);
@@ -236,7 +236,7 @@ function initPopup(sessionId: string, payload: PopupInitPayload, port: MessagePo
         });
         // Select this one
         accountItem.classList.add('selected');
-        selectedAccountId = account.credentialId;
+        selectedAccountId = account.uniqueId;
 
         // Enable the action button when account is selected
         actionButton.disabled = false;
@@ -256,7 +256,7 @@ function initPopup(sessionId: string, payload: PopupInitPayload, port: MessagePo
   const actionButton = createElement(
     'button',
     `nydia-popup-btn nydia-popup-btn-action ${isCreateMode ? 'gradient' : ''}`,
-  ) as HTMLButtonElement;
+  );
 
   const actionIconBox = createElement('span', 'nydia-popup-btn-icon');
   const passkeySvg = createSvgElement(icons.passkey);
@@ -298,10 +298,10 @@ function initPopup(sessionId: string, payload: PopupInitPayload, port: MessagePo
   // Action button handler
   actionButton.addEventListener('click', () => {
     try {
-      let selectedCredentialId: string | undefined;
+      let selectedUniqueId: string | undefined;
       if (!isCreateMode) {
-        selectedCredentialId = selectedAccountId ?? undefined;
-        if (!selectedCredentialId) {
+        selectedUniqueId = selectedAccountId ?? undefined;
+        if (!selectedUniqueId) {
           showError(state, 'Please select an account');
           return;
         }
@@ -321,7 +321,7 @@ function initPopup(sessionId: string, payload: PopupInitPayload, port: MessagePo
       postToHost(state, {
         type: PopupMessage.Action,
         sessionId,
-        selectedCredentialId,
+        selectedUniqueId,
       });
     } catch (error: unknown) {
       logError('[Popup] Failed to dispatch action', error);
@@ -378,7 +378,7 @@ window.addEventListener('message', (event) => {
     if (!port) {
       return;
     }
-    initPopup(message.sessionId, (message as PopupInitMessage).payload, port);
+    initPopup(message.sessionId, message.payload, port);
   }
 });
 
