@@ -3,7 +3,6 @@ import { CBORValue, WebAuthnCBOR } from './cbor';
 import { logDebug, logError, logInfo } from './logger';
 import {
   createUniqueId,
-  findCredential,
   getAllCredentialsMetadata,
   getEncryptedRecord,
   openSecret,
@@ -378,7 +377,7 @@ export async function createCredential(
 // Process get assertion operation by finding credential and signing challenge
 export async function handleGetAssertion(
   options: GetAssertionOptions,
-  selectedUniqueId?: string,
+  selectedUniqueId: string,
 ): Promise<AssertionResponse> {
   logInfo('[Authenticator] Starting assertion handling...');
   logDebug('[Authenticator] Assertion options', options);
@@ -405,15 +404,12 @@ export async function handleGetAssertion(
   logDebug('[Authenticator] Challenge buffer (hex)', bufferToHex(challengeBuffer));
   logDebug('[Authenticator] Challenge string', challengeString);
 
-  // Search for stored credentials — returns only uniqueId, no decryption
-  const { uniqueId } = await findCredential(options, selectedUniqueId);
-
   // Determine rpId
   const rpId = options.publicKey.rpId || new URL(options.origin).hostname;
   logDebug('[Authenticator] Using rpId', rpId);
 
   // Load private key, algorithm, and secret payload (single secret decrypt)
-  const [secretKey, algorithm, secretPayload] = await loadPrivateKey(uniqueId);
+  const [secretKey, algorithm, secretPayload] = await loadPrivateKey(selectedUniqueId);
 
   logDebug('[Authenticator] Loaded private key and algorithm', {
     secretKeyType: secretKey.type,
@@ -509,7 +505,7 @@ export async function handleGetAssertion(
   logDebug('[Authenticator] Signature (base64url)', base64UrlEncode(signature));
 
   // Update credential counter by uniqueId (direct DB lookup, no full decrypt)
-  await updateCredentialCounter(uniqueId);
+  await updateCredentialCounter(selectedUniqueId);
 
   // Construct the response
   const response: AssertionResponse = {
