@@ -42,7 +42,7 @@ async function initializeWrappingKey(): Promise<CryptoKeyPair> {
       publicExponent: new Uint8Array([1, 0, 1]),
       hash: 'SHA-256',
     },
-    true, // extractable public key
+    false, // private key not extractable
     ['wrapKey', 'unwrapKey'],
   );
 
@@ -50,19 +50,8 @@ async function initializeWrappingKey(): Promise<CryptoKeyPair> {
   return keyPair;
 }
 
-// Clean up sensitive data
-function secureCleanup(data: Uint8Array | number[] | null): void {
-  if (!data) return;
-
-  if (data instanceof Uint8Array) {
-    crypto.getRandomValues(data);
-    data.fill(0);
-  } else if (Array.isArray(data)) {
-    for (let i = 0; i < data.length; i++) {
-      data[i] = Math.floor(Math.random() * 256);
-    }
-    data.fill(0);
-  }
+function secureCleanup(data: Uint8Array | null): void {
+  data?.fill(0);
 }
 
 function normalizeDescriptor(
@@ -252,14 +241,14 @@ async function router(msg: BackgroundMessage): Promise<unknown> {
       // Use uniqueId
       case 'uploadToSia':
         if (!msg.uniqueId) return { error: 'Missing uniqueId' };
-        return handleUploadToSia(msg.uniqueId);
+        return await handleUploadToSia(msg.uniqueId);
 
       case 'uploadUnsyncedPasskeys':
         if (!msg.uniqueIds) return { error: 'Missing uniqueIds' };
-        return handleUploadUnsyncedPasskeys(msg.uniqueIds);
+        return await handleUploadUnsyncedPasskeys(msg.uniqueIds);
 
       case 'syncFromSia':
-        return handleSyncFromSia();
+        return await handleSyncFromSia();
 
       // Get public key for wrapping
       case 'getWrappingPublicKey': {
@@ -285,6 +274,8 @@ async function router(msg: BackgroundMessage): Promise<unknown> {
 
       // Store wrapped key using RSA-OAEP
       case 'storeWrappedKey': {
+        let wrappedKeyBytes: Uint8Array | null = null;
+
         try {
           // Validate input
           if (!Array.isArray(msg.wrappedKey)) {
@@ -296,12 +287,12 @@ async function router(msg: BackgroundMessage): Promise<unknown> {
           }
 
           // Convert array back to Uint8Array
-          const wrappedKeyBytes = new Uint8Array(msg.wrappedKey);
+          wrappedKeyBytes = new Uint8Array(msg.wrappedKey);
 
           // Unwrap the key using our private key
           const rootKey = await crypto.subtle.unwrapKey(
             'raw',
-            wrappedKeyBytes,
+            wrappedKeyBytes as BufferSource,
             wrappingKeyPair.privateKey,
             { name: 'RSA-OAEP' },
             { name: 'HKDF' },
@@ -314,10 +305,6 @@ async function router(msg: BackgroundMessage): Promise<unknown> {
 
           // Clean up RSA keys after successful storage
           wrappingKeyPair = null;
-
-          // Clean up sensitive data from the message
-          secureCleanup(msg.wrappedKey);
-          secureCleanup(wrappedKeyBytes);
 
           logDebug('[Background] Root key securely stored and RSA keys cleaned up');
           return { status: 'ok' };
@@ -339,12 +326,16 @@ async function router(msg: BackgroundMessage): Promise<unknown> {
           }
 
           return { error: 'Failed to store key securely' };
+        } finally {
+          if (wrappedKeyBytes) {
+            secureCleanup(wrappedKeyBytes);
+          }
         }
       }
 
       // proxy → store.ts
       default:
-        return handleMessageInBackground(msg);
+        return await handleMessageInBackground(msg);
     }
   } catch (error: unknown) {
     const isExpectedInvalidStateError =
