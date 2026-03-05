@@ -4,6 +4,7 @@ import { logDebug, logError, logInfo } from './logger';
 import {
   createUniqueId,
   getAllCredentialsMetadata,
+  getCredentialsMetadataByUniqueIds,
   getEncryptedRecord,
   openSecret,
   savePrivateKey,
@@ -72,7 +73,7 @@ function rawToDer(rawSignature: ArrayBuffer): ArrayBuffer {
   const r = raw.slice(0, 32);
   const s = raw.slice(32, 64);
 
-  // Prepend zero if the first byte is greater than 0x80
+  // Prepend zero if the high bit is set (value >= 0x80)
   const prependZeroIfNeeded = (buffer: Uint8Array): Uint8Array => {
     if (buffer[0] & 0x80) {
       const extendedBuffer = new Uint8Array(buffer.length + 1);
@@ -175,6 +176,28 @@ function getAlgorithmName(algorithm: SigningAlgorithm): AlgorithmName {
   return 'Ed25519';
 }
 
+async function resolveAllowedUniqueIds(
+  rpId: string,
+  allowCredentials?: PublicKeyCredentialDescriptor[],
+): Promise<Set<string> | null> {
+  if (!Array.isArray(allowCredentials) || allowCredentials.length === 0) {
+    return null;
+  }
+
+  const uniqueIds = await Promise.all(
+    allowCredentials.map(async (descriptor) => {
+      const descriptorId = descriptor.id as string | ArrayBuffer | Uint8Array;
+      const credentialId =
+        typeof descriptorId === 'string'
+          ? descriptorId
+          : base64UrlEncode(toArrayBuffer(descriptorId));
+      return createUniqueId(rpId, credentialId);
+    }),
+  );
+
+  return new Set(uniqueIds);
+}
+
 // Create a new credential
 export async function createCredential(
   options: CredentialCreationOptions,
@@ -205,8 +228,10 @@ export async function createCredential(
     logDebug(`[Authenticator] ${userIdLog}`);
 
     // Determine rpId
-    const rpId =
-      options.publicKey.rpId || options.publicKey.rp.id || new URL(options.origin).hostname;
+    const rpId = options.publicKey.rpId || options.publicKey.rp.id;
+    if (!rpId) {
+      throw new Error('rpId is missing in credential creation options');
+    }
     logDebug('[Authenticator] rpId', rpId);
 
     // Choose a signing algorithm
@@ -270,7 +295,7 @@ export async function createCredential(
     const publicKeyDERBase64 = base64UrlEncode(publicKeyDER);
 
     // Save the private key
-    await savePrivateKey(
+    const uniqueId = await savePrivateKey(
       credentialId,
       rpId,
       keyPair.privateKey,
@@ -279,9 +304,6 @@ export async function createCredential(
       options.publicKey.user.name, // Pass the username
     );
     logDebug('[Authenticator] Private key saved');
-
-    // Create a unique ID associated with the credential
-    const uniqueId = await createUniqueId(rpId, credentialIdEncoded);
     logDebug('[Authenticator] UniqueId associated with credential created', uniqueId);
 
     // Create authenticator data
@@ -362,7 +384,7 @@ export async function createCredential(
     };
 
     logInfo('[Authenticator] Credential created successfully');
-    logDebug('[Authenticator] Credential', createResponse);
+    logDebug('[Authenticator] Attestation response', createResponse);
 
     return createResponse;
   } catch (error: unknown) {
@@ -374,7 +396,7 @@ export async function createCredential(
   }
 }
 
-// Process get assertion operation by finding credential and signing challenge
+// Sign the challenge using the credential identified by selectedUniqueId
 export async function handleGetAssertion(
   options: GetAssertionOptions,
   selectedUniqueId: string,
@@ -396,7 +418,7 @@ export async function handleGetAssertion(
     challengeBuffer = new Uint8Array(toArrayBuffer(options.publicKey.challenge));
     challengeString = options.publicKey.challenge;
   } else {
-    // Challenge as ArrayBuffer
+    // Challenge as binary (ArrayBuffer or Uint8Array)
     challengeBuffer = new Uint8Array(toArrayBuffer(options.publicKey.challenge));
     challengeString = base64UrlEncode(challengeBuffer);
   }
@@ -405,14 +427,22 @@ export async function handleGetAssertion(
   logDebug('[Authenticator] Challenge string', challengeString);
 
   // Determine rpId
-  const rpId = options.publicKey.rpId || new URL(options.origin).hostname;
+  const rpId = options.publicKey.rpId;
+  if (!rpId) {
+    throw new Error('rpId is missing in assertion options');
+  }
   logDebug('[Authenticator] Using rpId', rpId);
 
-  // Load private key, algorithm, and secret payload (single secret decrypt)
-  const [secretKey, algorithm, secretPayload] = await loadPrivateKey(selectedUniqueId);
+  const allowedUniqueIds = await resolveAllowedUniqueIds(rpId, options.publicKey.allowCredentials);
+  if (allowedUniqueIds && !allowedUniqueIds.has(selectedUniqueId)) {
+    throw new DOMException('Selected credential is not allowed for this request', 'NotAllowedError');
+  }
+
+  // Load private key, algorithm, and secret payload
+  const [privateKey, algorithm, secretPayload] = await loadPrivateKey(selectedUniqueId);
 
   logDebug('[Authenticator] Loaded private key and algorithm', {
-    secretKeyType: secretKey.type,
+    privateKeyType: privateKey.type,
     algorithmName: getAlgorithmName(algorithm),
     counter: secretPayload.counter,
   });
@@ -464,7 +494,7 @@ export async function handleGetAssertion(
     // Generate raw signature
     const rawSignature = await subtle.sign(
       { name: 'ECDSA', hash: 'SHA-256' },
-      secretKey,
+      privateKey,
       signatureBase,
     );
     logDebug('[Authenticator] Generated signature using ES256 (raw format)');
@@ -487,14 +517,14 @@ export async function handleGetAssertion(
       logDebug('[Authenticator] Signature does not appear to be DER-encoded');
     }
   } else if (algorithm instanceof RS256) {
-    signature = await subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, secretKey, signatureBase);
+    signature = await subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, privateKey, signatureBase);
     logDebug('[Authenticator] Generated signature using RS256');
 
     const signatureBytes = new Uint8Array(signature);
     logDebug('[Authenticator] Signature length', signatureBytes.length);
     logDebug('[Authenticator] Signature (hex)', bufferToHex(signatureBytes));
   } else {
-    signature = await subtle.sign({ name: 'Ed25519' }, secretKey, signatureBase);
+    signature = await subtle.sign({ name: 'Ed25519' }, privateKey, signatureBase);
     logDebug('[Authenticator] Generated signature using Ed25519');
 
     const signatureBytes = new Uint8Array(signature);
@@ -504,7 +534,7 @@ export async function handleGetAssertion(
 
   logDebug('[Authenticator] Signature (base64url)', base64UrlEncode(signature));
 
-  // Update credential counter by uniqueId (direct DB lookup, no full decrypt)
+  // Update credential counter
   await updateCredentialCounter(selectedUniqueId);
 
   // Construct the response
@@ -520,19 +550,28 @@ export async function handleGetAssertion(
     },
   };
 
-  logDebug('[Authenticator] Constructed assertion response', response);
+  logDebug('[Authenticator] Assertion response', response);
 
   return response;
 }
 
 // Return available credentials matching the relying party ID
-export async function getAvailableCredentials(rpId: string): Promise<Account[]> {
-  const metadataList = await getAllCredentialsMetadata();
-  return metadataList
-    .filter((metadata) => metadata.rpId === rpId)
-    .map((metadata) => ({
-      username: metadata.userName || 'Unknown user',
-      uniqueId: metadata.uniqueId,
-      creationTime: metadata.creationTime,
-    }));
+export async function getAvailableCredentials(
+  rpId: string,
+  allowCredentialIds?: string[],
+): Promise<Account[]> {
+  const filtered =
+    Array.isArray(allowCredentialIds) && allowCredentialIds.length > 0
+      ? await getCredentialsMetadataByUniqueIds(
+          await Promise.all(
+            allowCredentialIds.map(async (credentialId) => createUniqueId(rpId, credentialId)),
+          ),
+        )
+      : (await getAllCredentialsMetadata()).filter((metadata) => metadata.rpId === rpId);
+
+  return filtered.map((metadata) => ({
+    username: metadata.userName || 'Unknown user',
+    uniqueId: metadata.uniqueId,
+    creationTime: metadata.creationTime,
+  }));
 }
