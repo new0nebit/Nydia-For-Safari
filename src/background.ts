@@ -66,6 +66,7 @@ function normalizeDescriptor(
 
 function toCreationOptions(options: SerializedCreationOptions): CredentialCreationOptions {
   const { publicKey } = options;
+  const { origin } = options;
 
   if (!publicKey?.challenge) {
     throw new Error('Invalid options: challenge is required');
@@ -81,7 +82,11 @@ function toCreationOptions(options: SerializedCreationOptions): CredentialCreati
     throw new Error('Invalid options: rp.name is required');
   }
 
-  const rpId = publicKey.rp.id ?? new URL(options.origin ?? '').hostname;
+  if (!origin) {
+    throw new Error('Invalid options: origin is required');
+  }
+
+  const rpId = publicKey.rp.id ?? new URL(origin).hostname;
 
   const rpEntity: PublicKeyCredentialRpEntity = {
     id: rpId,
@@ -100,18 +105,23 @@ function toCreationOptions(options: SerializedCreationOptions): CredentialCreati
       pubKeyCredParams: publicKey.pubKeyCredParams,
       excludeCredentials: normalizeDescriptor(publicKey.excludeCredentials),
     },
-    origin: options.origin ?? '',
+    origin,
   };
 }
 
 function toGetAssertionOptions(options: SerializedRequestOptions): GetAssertionOptions {
   const { publicKey } = options;
+  const { origin } = options;
 
   if (!publicKey?.challenge) {
     throw new Error('Invalid options: challenge is required');
   }
 
-  const rpId = publicKey.rpId ?? new URL(options.origin ?? '').hostname;
+  if (!origin) {
+    throw new Error('Invalid options: origin is required');
+  }
+
+  const rpId = publicKey.rpId ?? new URL(origin).hostname;
 
   return {
     publicKey: {
@@ -120,7 +130,7 @@ function toGetAssertionOptions(options: SerializedRequestOptions): GetAssertionO
       challenge: toArrayBuffer(publicKey.challenge),
       allowCredentials: normalizeDescriptor(publicKey.allowCredentials),
     },
-    origin: options.origin ?? '',
+    origin,
   };
 }
 
@@ -236,7 +246,10 @@ async function router(msg: BackgroundMessage): Promise<unknown> {
 
       case 'getAvailableCredentials':
         if (!msg.rpId) return { error: 'Missing rpId' };
-        return await getAvailableCredentials(msg.rpId);
+        return await getAvailableCredentials(
+          msg.rpId,
+          Array.isArray(msg.allowCredentialIds) ? msg.allowCredentialIds : undefined,
+        );
 
       // Use uniqueId
       case 'uploadToSia':
