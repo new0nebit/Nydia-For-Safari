@@ -46,7 +46,6 @@
       excludeCredentials?: Array<{ id: BufferSource | string; [key: string]: unknown }>;
       [key: string]: unknown;
     };
-    origin?: string;
     [key: string]: unknown;
   };
 
@@ -56,30 +55,30 @@
 
   // Serialize BufferSource values inside publicKey options into base64url strings
   const serializeOptions = (opts: PublicKeyOptions): PublicKeyOptions => {
-    const out: PublicKeyOptions = { ...opts, origin: location.origin };
-    if (!out.publicKey) return out;
+    const serializedOptions: PublicKeyOptions = { ...opts };
+    if (!serializedOptions.publicKey) return serializedOptions;
 
-    const pk = (out.publicKey = { ...out.publicKey });
+    const publicKeyOptions = (serializedOptions.publicKey = { ...serializedOptions.publicKey });
 
-    if (isBufferSource(pk.challenge)) pk.challenge = toBase64url(pk.challenge);
+    if (isBufferSource(publicKeyOptions.challenge)) publicKeyOptions.challenge = toBase64url(publicKeyOptions.challenge);
 
-    if (pk.user?.id && isBufferSource(pk.user.id)) {
-      pk.user = { ...pk.user, id: toBase64url(pk.user.id) };
+    if (publicKeyOptions.user?.id && isBufferSource(publicKeyOptions.user.id)) {
+      publicKeyOptions.user = { ...publicKeyOptions.user, id: toBase64url(publicKeyOptions.user.id) };
     }
 
     // Handle arrays of credentials that need id conversion
     const rewrite = (
       arr?: Array<{ id: BufferSource | string; [key: string]: unknown }>,
     ): Array<{ id: string; [key: string]: unknown }> | undefined =>
-      arr?.map((d) => ({
-        ...d,
-        id: typeof d.id === 'string' ? d.id : toBase64url(d.id),
+      arr?.map((descriptor) => ({
+        ...descriptor,
+        id: typeof descriptor.id === 'string' ? descriptor.id : toBase64url(descriptor.id),
       }));
 
-    pk.allowCredentials = rewrite(pk.allowCredentials);
-    pk.excludeCredentials = rewrite(pk.excludeCredentials);
+    publicKeyOptions.allowCredentials = rewrite(publicKeyOptions.allowCredentials);
+    publicKeyOptions.excludeCredentials = rewrite(publicKeyOptions.excludeCredentials);
 
-    return out;
+    return serializedOptions;
   };
 
   // Convert raw response data to native-like WebAuthn response objects
@@ -168,11 +167,11 @@
               try {
                 // Transform raw response into a proper credential object
                 resolve(asPublicKeyCredential(response as Record<string, unknown>));
-              } catch (err: unknown) {
+              } catch (error: unknown) {
                 reject(
                   new DOMException(
                     `Error transforming credential: ${
-                      err instanceof Error ? err.message : String(err)
+                      error instanceof Error ? error.message : String(error)
                     }`,
                     'NotAllowedError',
                   ),
@@ -189,6 +188,9 @@
               // Fallback to native WebAuthn flow
               window.removeEventListener('message', handler);
               original.call(navigator.credentials, options).then(resolve).catch(reject);
+              break;
+
+            case undefined:
               break;
           }
         };
@@ -224,7 +226,7 @@
   // Emulate platform authenticator presence
   if ('PublicKeyCredential' in window) {
     const pkc = window.PublicKeyCredential as unknown as Record<string, unknown>;
-    pkc.isUserVerifyingPlatformAuthenticatorAvailable = async () => true;
-    pkc.isConditionalMediationAvailable = async () => true;
+    pkc.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);
+    pkc.isConditionalMediationAvailable = () => Promise.resolve(true);
   }
 })();
