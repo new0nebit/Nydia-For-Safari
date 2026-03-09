@@ -111,6 +111,10 @@ class WebAuthnInterceptor {
 
       return result as SerializedWebAuthnResponse;
     } catch (error: unknown) {
+      if (type === 'get' && error instanceof Error && error.message === 'rootKeyMissing') {
+        logDebug('[Dispatcher] rootKey unavailable, falling back to native browser');
+        return null;
+      }
       logDebug(`[Dispatcher] WebAuthn ${type} operation failed`, error);
       throw error;
     }
@@ -186,6 +190,7 @@ class WebAuthnInterceptor {
       }
       return [];
     } catch (error: unknown) {
+      if (error instanceof Error && error.message === 'rootKeyMissing') throw error;
       logDebug('[Dispatcher] Error getting available credentials', error);
       return [];
     }
