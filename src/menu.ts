@@ -1,5 +1,5 @@
 import { icons } from './ui/icons/menu';
-import { logError, logWarn } from './logger';
+import { logError } from './logger';
 import {
   getSettings,
   setNotificationDisplayer,
@@ -22,18 +22,6 @@ interface SyncDownloadResult {
   failedCount: number;
   empty: boolean;
   error: boolean;
-}
-
-function isCredentialMetadata(value: unknown): value is CredentialMetadata {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.uniqueId === 'string' &&
-    typeof record.rpId === 'string' &&
-    typeof record.creationTime === 'number' &&
-    typeof record.isSynced === 'boolean' &&
-    (record.userName === undefined || typeof record.userName === 'string')
-  );
 }
 
 // Domain Sanitisation
@@ -95,8 +83,8 @@ function createButton(
   appendSvgTo(button, iconSvg);
   button.appendChild(create('span', [], label));
 
-  button.addEventListener('click', (e) => {
-    e.stopPropagation();
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
     void Promise.resolve(handler(button)).catch(() => {});
   });
 
@@ -283,21 +271,18 @@ export class Menu {
       const passkeyList = document.getElementById('passkey-list');
       if (!passkeyList) return;
 
+      const credentialsPromise: Promise<unknown> = browser.runtime
+        .sendMessage({ type: 'getAllCredentialsMetadata' })
+        .catch(() => []);
+
       const [credentialsRaw, settings] = await Promise.all([
-        browser.runtime.sendMessage({ type: 'getAllCredentialsMetadata' }).catch(() => []),
+        credentialsPromise,
         getSettings(),
       ]);
 
       const credentials = Array.isArray(credentialsRaw)
-        ? credentialsRaw.filter(isCredentialMetadata)
+        ? (credentialsRaw as CredentialMetadata[])
         : [];
-      if (Array.isArray(credentialsRaw) && credentials.length !== credentialsRaw.length) {
-        logWarn('[Menu] Dropped invalid credential metadata entries', {
-          received: credentialsRaw.length,
-          kept: credentials.length,
-          dropped: credentialsRaw.length - credentials.length,
-        });
-      }
       credentials.sort((a, b) => (b.creationTime ?? 0) - (a.creationTime ?? 0));
 
       if (!document.querySelector('.header-container')) {
@@ -342,7 +327,7 @@ export class Menu {
   }
 
   private buildHeader(listRoot: HTMLElement): void {
-    this.cleanup.forEach((fn) => fn());
+    this.cleanup.forEach((cleanup) => cleanup());
     this.cleanup = [];
 
     const header = create('div', ['header-container']);
@@ -397,13 +382,13 @@ export class Menu {
       menu.classList.toggle('hidden');
     };
 
-    burger.addEventListener('click', (e) => {
-      e.stopPropagation();
+    burger.addEventListener('click', (event) => {
+      event.stopPropagation();
       toggle();
     });
 
-    const handleOutsideClick = (e: Event) => {
-      if (!wrap.contains(e.target as Node) && !menu.classList.contains('hidden')) {
+    const handleOutsideClick = (event: Event) => {
+      if (!wrap.contains(event.target as Node) && !menu.classList.contains('hidden')) {
         toggle();
       }
     };
