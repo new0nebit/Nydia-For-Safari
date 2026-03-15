@@ -283,8 +283,12 @@ export class Menu {
       const passkeyList = document.getElementById('passkey-list');
       if (!passkeyList) return;
 
+      const credentialsPromise: Promise<unknown> = browser.runtime
+        .sendMessage({ type: 'getAllCredentialsMetadata' })
+        .catch(() => []);
+
       const [credentialsRaw, settings] = await Promise.all([
-        browser.runtime.sendMessage({ type: 'getAllCredentialsMetadata' }).catch(() => []),
+        credentialsPromise,
         getSettings(),
       ]);
 
