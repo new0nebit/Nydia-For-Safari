@@ -83,8 +83,8 @@ export async function showSettingsForm(): Promise<void> {
 
     if (field.name === 'serverPort') {
       input.maxLength = 5;
-      input.addEventListener('input', (e) => {
-        const target = e.target as HTMLInputElement;
+      input.addEventListener('input', (event) => {
+        const target = event.target as HTMLInputElement;
         target.value = target.value.replace(/[^\d]/g, '');
       });
     }
@@ -136,8 +136,8 @@ export async function showSettingsForm(): Promise<void> {
 
   form.appendChild(buttonContainer);
 
-  form.onsubmit = async (evt) => {
-    evt.preventDefault();
+  form.onsubmit = async (event) => {
+    event.preventDefault();
     await saveSettingsFromForm(form);
     // Call handler instead of reloading the page
     if (onSettingsComplete) {
@@ -225,22 +225,22 @@ async function saveSettingsFromForm(form: HTMLFormElement) {
     return;
   }
 
-  const prev = await getSettings();
+  const existingSettings = await getSettings();
 
   const hostChanged =
-    !prev ||
-    prev.serverAddress !== settings.serverAddress ||
-    prev.serverPort !== settings.serverPort;
+    !existingSettings ||
+    existingSettings.serverAddress !== settings.serverAddress ||
+    existingSettings.serverPort !== settings.serverPort;
 
   if (hostChanged) {
     try {
       settings.serverProtocol = await detectProtocol(settings);
     } catch {
-      settings.serverProtocol = prev?.serverProtocol;
+      settings.serverProtocol = existingSettings?.serverProtocol;
       notify('warning', 'Warning', "Saved, but connection couldn't be checked.");
     }
   } else {
-    settings.serverProtocol = prev?.serverProtocol;
+    settings.serverProtocol = existingSettings?.serverProtocol;
   }
 
   const result = (await browser.runtime.sendMessage({ type: 'saveSettings', settings })) as { status?: string; error?: string };
