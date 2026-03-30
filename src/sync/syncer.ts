@@ -4,6 +4,7 @@ import {
   listPasskeysFromRenterd,
 } from '../sia';
 import {
+  getAllPasskeyETags,
   getAllEncryptedRecords,
   getSettings,
   isEncryptedRecordReadable,
@@ -27,15 +28,28 @@ export async function handleFullSync(): Promise<FullSyncSummary> {
     failedCount: 0,
   };
 
-  // Phase 1: Download remote passkeys and reconcile with local
+  // Phase 1: Download remote passkeys that need reconciliation with local
   const remotePasskeyFiles = await listPasskeysFromRenterd(settings);
   const remoteListedIds = new Set(remotePasskeyFiles.map(({ uniqueId }) => uniqueId));
+  const cachedETags = await getAllPasskeyETags();
+
+  const initialLocalRecords = await getAllEncryptedRecords();
+  const localById = new Map(initialLocalRecords.map((record) => [record.uniqueId, record]));
   const repairSet = new Set<string>();
 
   const downloadResults = await Promise.allSettled(
-    remotePasskeyFiles.map(async ({ fileName, etag }) => {
+    remotePasskeyFiles.map(async ({ fileName, uniqueId, etag }) => {
+      const shouldDownload =
+        !etag ||
+        cachedETags.get(uniqueId) !== etag ||
+        !localById.has(uniqueId);
+
+      if (!shouldDownload) {
+        return { uniqueId, etag, skippedDownload: true as const };
+      }
+
       const remoteRecord = await downloadPasskeyFromRenterd(fileName, settings);
-      return { remoteRecord, etag };
+      return { remoteRecord, etag, skippedDownload: false as const };
     }),
   );
 
@@ -47,7 +61,24 @@ export async function handleFullSync(): Promise<FullSyncSummary> {
       continue;
     }
 
-    const { remoteRecord, etag } = result.value;
+    const { etag } = result.value;
+
+    if (result.value.skippedDownload) {
+      const localRecord = localById.get(result.value.uniqueId);
+      logDebug('[Syncer] Skipped', { reason: 'etag-unchanged', uniqueId: result.value.uniqueId });
+
+      if (localRecord?.isSynced === false) {
+        repairSet.add(result.value.uniqueId);
+      }
+
+      if (localRecord && !(await isEncryptedRecordReadable(localRecord))) {
+        logDebug('[Syncer] Record unreadable with current root key', { uniqueId: result.value.uniqueId });
+        summary.unreadableCount++;
+      }
+      continue;
+    }
+
+    const { remoteRecord } = result.value;
 
     try {
       const decision: ReconcileDecision = await reconcileRemoteRecord(remoteRecord);
@@ -96,9 +127,9 @@ export async function handleFullSync(): Promise<FullSyncSummary> {
   }
 
   // Phase 2: Collect all passkeys that need upload
+  const currentLocalRecords = await getAllEncryptedRecords();
   const uploadSet = new Set<string>();
-  const localRecords = await getAllEncryptedRecords();
-  for (const local of localRecords) {
+  for (const local of currentLocalRecords) {
     if (!local.isSynced || !remoteListedIds.has(local.uniqueId)) {
       uploadSet.add(local.uniqueId);
     }
