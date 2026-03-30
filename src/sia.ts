@@ -7,8 +7,10 @@ const MIME_OCTET_STREAM = 'application/octet-stream';
 const QUERY_BUCKET = 'bucket';
 const QUERY_MIMETYPE = 'mimetype';
 
-export function fileNameToUniqueId(fileName: string): string {
-  return fileName.replace(/\.passkey$/, '');
+interface RemotePasskeyFile {
+  fileName: string;
+  uniqueId: string;
+  etag: string | null;
 }
 
 function isValidEnvelope(value: unknown): value is EncryptedEnvelope {
@@ -113,18 +115,34 @@ async function httpRequest(
 // Get a list of passkeys from the bucket.
 export async function listPasskeysFromRenterd(
   settings: RenterdSettings,
-): Promise<string[]> {
+): Promise<RemotePasskeyFile[]> {
   logDebug('[Sia] Starting listPasskeysFromRenterd', { settings });
 
   const response = await httpRequest(buildListURL(settings), {
     method: 'GET',
     headers: buildHeaders(settings),
   });
-  const jsonData = (await response.json()) as { objects?: Array<{ key: string }> };
+  const jsonData = (await response.json()) as {
+    objects?: Array<{ key?: unknown; etag?: unknown; eTag?: unknown }>;
+  };
   const objects = jsonData.objects ?? [];
   const passkeyFiles = objects
-    .map((object) => object.key.replace(/^\//, ''))
-    .filter((key) => key.endsWith(PASSKEY_EXTENSION));
+    .filter((object): object is { key: string; etag?: unknown; eTag?: unknown } => typeof object.key === 'string')
+    .map((object) => ({
+      fileName: object.key.replace(/^\//, ''),
+      etag:
+        typeof object.etag === 'string'
+          ? object.etag
+          : typeof object.eTag === 'string'
+            ? object.eTag
+            : null,
+    }))
+    .filter(({ fileName }) => fileName.endsWith(PASSKEY_EXTENSION))
+    .map(({ fileName, etag }) => ({
+      fileName,
+      uniqueId: fileName.replace(/\.passkey$/, ''),
+      etag,
+    }));
 
   logDebug('[Sia] Found passkey files', { count: passkeyFiles.length, files: passkeyFiles });
   return passkeyFiles;

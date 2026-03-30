@@ -1,7 +1,6 @@
 import { logDebug, logError, logInfo } from '../logger';
 import {
   downloadPasskeyFromRenterd,
-  fileNameToUniqueId,
   listPasskeysFromRenterd,
 } from '../sia';
 import {
@@ -10,6 +9,7 @@ import {
   isEncryptedRecordReadable,
   isStoredRecordReadable,
   reconcileRemoteRecord,
+  savePasskeyETag,
 } from '../store';
 import { enqueueUpload } from './uploader';
 import type { FullSyncSummary, ReconcileDecision } from './types';
@@ -29,22 +29,25 @@ export async function handleFullSync(): Promise<FullSyncSummary> {
 
   // Phase 1: Download remote passkeys and reconcile with local
   const remotePasskeyFiles = await listPasskeysFromRenterd(settings);
-  const remoteListedIds = new Set(remotePasskeyFiles.map(fileNameToUniqueId));
+  const remoteListedIds = new Set(remotePasskeyFiles.map(({ uniqueId }) => uniqueId));
   const repairSet = new Set<string>();
 
   const downloadResults = await Promise.allSettled(
-    remotePasskeyFiles.map((fileName) => downloadPasskeyFromRenterd(fileName, settings)),
+    remotePasskeyFiles.map(async ({ fileName, etag }) => {
+      const remoteRecord = await downloadPasskeyFromRenterd(fileName, settings);
+      return { remoteRecord, etag };
+    }),
   );
 
   for (let i = 0; i < downloadResults.length; i++) {
     const result = downloadResults[i];
     if (result.status === 'rejected') {
-      logError(`[Syncer] Download failed for ${remotePasskeyFiles[i]}`, result.reason);
+      logError(`[Syncer] Download failed for ${remotePasskeyFiles[i].fileName}`, result.reason);
       summary.failedCount++;
       continue;
     }
 
-    const remoteRecord = result.value;
+    const { remoteRecord, etag } = result.value;
 
     try {
       const decision: ReconcileDecision = await reconcileRemoteRecord(remoteRecord);
@@ -67,6 +70,10 @@ export async function handleFullSync(): Promise<FullSyncSummary> {
           void exhaustive;
           throw new Error('Unhandled reconcile decision');
         }
+      }
+
+      if (etag) {
+        await savePasskeyETag(remoteRecord.uniqueId, etag);
       }
 
       const recordToCheck =

@@ -18,9 +18,15 @@ const counterLocks: Map<string, Promise<void>> = new Map();
 
 // IndexedDB
 const DB_NAME = 'NydiaDB';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const PASSKEY_STORE = 'passkeys';
+const ETAGS_STORE = 'etags';
 const SETTINGS_STORE = 'settings';
+
+type PasskeyETag = {
+  uniqueId: string;
+  etag: string;
+};
 
 function setupStores(db: IDBDatabase) {
   if (!db.objectStoreNames.contains(PASSKEY_STORE)) {
@@ -28,6 +34,9 @@ function setupStores(db: IDBDatabase) {
   }
   if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
     db.createObjectStore(SETTINGS_STORE, { keyPath: 'id' });
+  }
+  if (!db.objectStoreNames.contains(ETAGS_STORE)) {
+    db.createObjectStore(ETAGS_STORE, { keyPath: 'uniqueId' });
   }
 }
 
@@ -205,6 +214,42 @@ export async function getSettings(): Promise<RenterdSettings | null> {
       .objectStore(SETTINGS_STORE)
       .get('renterdSettings').onsuccess = (event) =>
         resolve((event.target as IDBRequest<RenterdSettings>).result ?? null);
+  });
+}
+
+export async function getAllPasskeyETags(): Promise<Map<string, string>> {
+  const db = await openDB();
+  const states: PasskeyETag[] = await new Promise((resolve) => {
+    db
+      .transaction(ETAGS_STORE, 'readonly')
+      .objectStore(ETAGS_STORE)
+      .getAll().onsuccess = (event) =>
+        resolve((event.target as IDBRequest<PasskeyETag[]>).result ?? []);
+  });
+
+  return new Map(states.map(({ uniqueId, etag }) => [uniqueId, etag]));
+}
+
+export async function getPasskeyETag(uniqueId: string): Promise<string | null> {
+  const db = await openDB();
+  const state: PasskeyETag | undefined = await new Promise((resolve) => {
+    db
+      .transaction(ETAGS_STORE, 'readonly')
+      .objectStore(ETAGS_STORE)
+      .get(uniqueId).onsuccess = (event) =>
+        resolve((event.target as IDBRequest<PasskeyETag | undefined>).result ?? undefined);
+  });
+
+  return state?.etag ?? null;
+}
+
+export async function savePasskeyETag(uniqueId: string, etag: string): Promise<void> {
+  const db = await openDB();
+  await new Promise<void>((resolve) => {
+    db
+      .transaction(ETAGS_STORE, 'readwrite')
+      .objectStore(ETAGS_STORE)
+      .put({ uniqueId, etag }).onsuccess = () => resolve();
   });
 }
 
@@ -477,8 +522,9 @@ export async function handleMessageInBackground(message: BackgroundMessage): Pro
         if (typeof message.uniqueId !== 'string') return { error: 'Invalid uniqueId' };
         const db = await openDB();
         await new Promise<void>((resolve, reject) => {
-          const transaction = db.transaction(PASSKEY_STORE, 'readwrite');
+          const transaction = db.transaction([PASSKEY_STORE, ETAGS_STORE], 'readwrite');
           transaction.objectStore(PASSKEY_STORE).delete(message.uniqueId!);
+          transaction.objectStore(ETAGS_STORE).delete(message.uniqueId!);
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error ?? new Error('Failed to delete credential'));
         });
