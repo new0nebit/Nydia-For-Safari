@@ -101,7 +101,7 @@ async function httpRequest(
     method: options.method ?? 'GET',
     path: requestURL.pathname,
   });
-  const response = await fetch(url, options);
+  const response = await fetch(url, { ...options, cache: 'no-store' });
   logDebug('[Sia] Response status', { status: response.status });
 
   if (!response.ok) {
