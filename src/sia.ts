@@ -112,6 +112,11 @@ async function httpRequest(
   return response;
 }
 
+function normalizeETag(etag: string | null): string | null {
+  if (!etag) return null;
+  return etag.replace(/^W\//, '').replace(/^"|"$/g, '');
+}
+
 // Get a list of passkeys from the bucket.
 export async function listPasskeysFromRenterd(
   settings: RenterdSettings,
@@ -130,12 +135,13 @@ export async function listPasskeysFromRenterd(
     .filter((object): object is { key: string; etag?: unknown; eTag?: unknown } => typeof object.key === 'string')
     .map((object) => ({
       fileName: object.key.replace(/^\//, ''),
-      etag:
+      etag: normalizeETag(
         typeof object.etag === 'string'
           ? object.etag
           : typeof object.eTag === 'string'
             ? object.eTag
             : null,
+      ),
     }))
     .filter(({ fileName }) => fileName.endsWith(PASSKEY_EXTENSION))
     .map(({ fileName, etag }) => ({
@@ -153,16 +159,17 @@ async function uploadPasskeyToRenterd(
   passkeyData: Blob,
   uniqueId: string,
   settings: RenterdSettings,
-): Promise<void> {
+): Promise<string | null> {
   const fileName = `${uniqueId}${PASSKEY_EXTENSION}`;
   logDebug('[Sia] Starting uploadPasskeyToRenterd', { fileName });
 
-  await httpRequest(buildUploadURL(settings, fileName), {
+  const response = await httpRequest(buildUploadURL(settings, fileName), {
     method: 'PUT',
     headers: buildHeaders(settings, MIME_OCTET_STREAM),
     body: passkeyData,
   });
   logDebug('[Sia] Passkey uploaded to renterd', { fileName });
+  return normalizeETag(response.headers.get('ETag'));
 }
 
 // Download a passkey from renterd and return it as EncryptedRecord.
@@ -195,7 +202,7 @@ export async function downloadPasskeyFromRenterd(
 // Upload an encrypted passkey record to renterd.
 export async function uploadPasskeyDirect(
   record: EncryptedRecord,
-): Promise<{ success: true } | { success: false; error: string }> {
+): Promise<{ success: true; etag: string | null } | { success: false; error: string }> {
   try {
     const settings = await getSettings();
     if (!settings) {
@@ -212,11 +219,11 @@ export async function uploadPasskeyDirect(
       type: MIME_OCTET_STREAM,
     });
 
-    await uploadPasskeyToRenterd(passkeyData, record.uniqueId, settings);
+    const etag = await uploadPasskeyToRenterd(passkeyData, record.uniqueId, settings);
     logDebug('[Sia] Encrypted record prepared and uploaded via renterd worker API', {
       uniqueId: record.uniqueId,
     });
-    return { success: true };
+    return { success: true, etag };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return {

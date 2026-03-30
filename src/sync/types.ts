@@ -9,4 +9,4 @@ export interface FullSyncSummary {
   failedCount: number;
 }
 
-export type UploadResult = { success: true } | { success: false; error: string };
+export type UploadResult = { success: true; etag: string | null } | { success: false; error: string };

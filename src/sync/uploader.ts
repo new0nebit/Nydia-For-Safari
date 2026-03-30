@@ -1,6 +1,6 @@
 import { logDebug, logError } from '../logger';
 import { uploadPasskeyDirect } from '../sia';
-import { getEncryptedRecord, markSyncedIfStillCurrent } from '../store';
+import { getEncryptedRecord, markSyncedIfStillCurrent, savePasskeyETag } from '../store';
 import type { UploadResult } from './types';
 
 interface UploadEntry {
@@ -21,12 +21,16 @@ async function doUpload(uniqueId: string): Promise<UploadResult> {
     return { success: false, error: result.error };
   }
 
+  if (result.etag) {
+    await savePasskeyETag(uniqueId, result.etag);
+  }
+
   const markedSynced = await markSyncedIfStillCurrent(record);
   if (!markedSynced) {
     logDebug('[Uploader] Skipped sync flag: record changed since upload');
   }
 
-  return { success: true };
+  return { success: true, etag: result.etag };
 }
 
 export function enqueueUpload(uniqueId: string): Promise<UploadResult> {
@@ -38,7 +42,7 @@ export function enqueueUpload(uniqueId: string): Promise<UploadResult> {
 
   const entry: UploadEntry = {
     rerun: false,
-    promise: Promise.resolve<UploadResult>({ success: true }),
+    promise: Promise.resolve<UploadResult>({ success: true, etag: null }),
   };
 
   entry.promise = (async () => {
