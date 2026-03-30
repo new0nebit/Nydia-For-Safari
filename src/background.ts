@@ -13,6 +13,7 @@ import {
   getEncryptedRecord,
   getSettings,
   handleMessageInBackground,
+  markSyncedIfStillCurrent,
   saveEncryptedRecord,
   getRootKeyIfAvailable,
   setRootKey,
@@ -156,8 +157,10 @@ async function handleUploadToSia(uniqueId: string) {
 
   // If upload successful, update isSynced flag
   if (result.success) {
-    encryptedRecord.isSynced = true;
-    await saveEncryptedRecord(encryptedRecord);
+    const marked = await markSyncedIfStillCurrent(encryptedRecord);
+    if (!marked) {
+      logDebug('[Background] Skipped sync flag update: record changed since upload');
+    }
   }
 
   return result;

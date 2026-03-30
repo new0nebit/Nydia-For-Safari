@@ -293,11 +293,42 @@ export async function saveEncryptedRecord(record: EncryptedRecord): Promise<void
   });
 }
 
+function isEncryptedPayloadIdentical(a: EncryptedRecord, b: EncryptedRecord): boolean {
+  return (
+    a.metadata.iv === b.metadata.iv &&
+    a.metadata.data === b.metadata.data &&
+    a.secret.iv === b.secret.iv &&
+    a.secret.data === b.secret.data
+  );
+}
+
+export async function markSyncedIfStillCurrent(
+  uploadedRecord: EncryptedRecord,
+): Promise<boolean> {
+  const db = await openDB();
+  return new Promise<boolean>((resolve, reject) => {
+    const transaction = db.transaction(PASSKEY_STORE, 'readwrite');
+    const store = transaction.objectStore(PASSKEY_STORE);
+
+    transaction.onerror = () => reject(transaction.error ?? new Error('Failed to mark synced'));
+
+    store.get(uploadedRecord.uniqueId).onsuccess = (event) => {
+      const current = (event.target as IDBRequest<EncryptedRecord>).result;
+      if (!current || !isEncryptedPayloadIdentical(current, uploadedRecord)) {
+        resolve(false);
+        return;
+      }
+      current.isSynced = true;
+      store.put(current).onsuccess = () => resolve(true);
+    };
+  });
+}
+
 // counter + Sia sync
 export function updateCredentialCounter(uniqueId: string): Promise<void> {
   const pendingLock = counterLocks.get(uniqueId) ?? Promise.resolve();
 
-  const lockPromise = pendingLock.then(async () => {
+  const lockPromise = pendingLock.catch(() => undefined).then(async () => {
     const record = await getEncryptedRecord(uniqueId);
     if (!record) throw new Error('Credential not found');
 
@@ -310,20 +341,28 @@ export function updateCredentialCounter(uniqueId: string): Promise<void> {
     const updated: EncryptedRecord = { ...record, secret: newSecret, isSynced: false };
     await saveEncryptedRecord(updated);
 
-    uploadPasskeyDirect(updated).then(async (result) => {
-      if (result.success) {
-        updated.isSynced = true;
-        await saveEncryptedRecord(updated);
-      } else {
-        logWarn('[Store] counter sync Sia', result.error);
-      }
-    }).catch((error) => {
-      logError('[Store] Error in async upload', error);
-    });
+    uploadPasskeyDirect(updated)
+      .then(async (result) => {
+        if (result.success) {
+          const marked = await markSyncedIfStillCurrent(updated);
+          if (!marked) {
+            logWarn('[Store] counter sync skipped: record changed since upload');
+          }
+        } else {
+          logWarn('[Store] counter sync Sia', result.error);
+        }
+      })
+      .catch((error) => {
+        logError('[Store] Error in async upload', error);
+      });
   });
 
   counterLocks.set(uniqueId, lockPromise);
-  void lockPromise.finally(() => counterLocks.delete(uniqueId));
+  void lockPromise.finally(() => {
+    if (counterLocks.get(uniqueId) === lockPromise) {
+      counterLocks.delete(uniqueId);
+    }
+  });
   return lockPromise;
 }
 
