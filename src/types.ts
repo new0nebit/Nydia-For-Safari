@@ -112,7 +112,6 @@ export interface BackgroundMessage {
   allowCredentialIds?: string[];
   selectedUniqueId?: string;
   uniqueId?: string;
-  uniqueIds?: string[];
   wrappedKey?: number[];
   [key: string]: unknown;
 }

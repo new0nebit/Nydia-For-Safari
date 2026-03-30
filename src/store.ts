@@ -1,5 +1,4 @@
-import { logDebug, logError, logWarn } from './logger';
-import { uploadPasskeyDirect } from './sia';
+import { logDebug, logError } from './logger';
 import {
   BackgroundMessage,
   CredentialMetadata,
@@ -8,6 +7,7 @@ import {
   RenterdSettings,
   StoredCredential,
 } from './types';
+import type { ReconcileDecision } from './sync/types';
 import { base64UrlDecode, base64UrlEncode } from './utils/base64url';
 
 // Web Crypto API
@@ -167,11 +167,23 @@ export type SecretPayload = {
   counter: number;
 };
 
-export async function openSecret(uniqueId: string): Promise<SecretPayload> {
+export async function isEncryptedRecordReadable(record: EncryptedRecord): Promise<boolean> {
+  try {
+    const [metadataKey, secretKey] = await Promise.all([deriveMetadataKey(), deriveSecretKey()]);
+    await Promise.all([
+      openEnvelope<MetadataPayload>(metadataKey, record.metadata),
+      openEnvelope<SecretPayload>(secretKey, record.secret),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function isStoredRecordReadable(uniqueId: string): Promise<boolean> {
   const record = await getEncryptedRecord(uniqueId);
-  if (!record) throw new Error('Credential not found');
-  const secretKey = await deriveSecretKey();
-  return openEnvelope<SecretPayload>(secretKey, record.secret);
+  if (!record) return false;
+  return isEncryptedRecordReadable(record);
 }
 
 // Settings Management
@@ -282,8 +294,19 @@ export async function getEncryptedRecord(
   });
 }
 
+export async function getAllEncryptedRecords(): Promise<EncryptedRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve) => {
+    db
+      .transaction(PASSKEY_STORE, 'readonly')
+      .objectStore(PASSKEY_STORE)
+      .getAll().onsuccess = (event) =>
+        resolve((event.target as IDBRequest<EncryptedRecord[]>).result ?? []);
+  });
+}
+
 // Save encrypted credential directly to DB
-export async function saveEncryptedRecord(record: EncryptedRecord): Promise<void> {
+async function saveEncryptedRecord(record: EncryptedRecord): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve) => {
     db
@@ -324,46 +347,79 @@ export async function markSyncedIfStillCurrent(
   });
 }
 
-// counter + Sia sync
-export function updateCredentialCounter(uniqueId: string): Promise<void> {
+export async function reconcileRemoteRecord(
+  remoteRecord: EncryptedRecord,
+): Promise<ReconcileDecision> {
+  const local = await getEncryptedRecord(remoteRecord.uniqueId);
+
+  if (!local) {
+    await saveEncryptedRecord(remoteRecord);
+    return 'new';
+  }
+
+  if (isEncryptedPayloadIdentical(local, remoteRecord)) {
+    if (!local.isSynced) {
+      await markSyncedIfStillCurrent(local);
+    }
+    return 'identical';
+  }
+
+  const secretKey = await deriveSecretKey();
+  const [localSecret, remoteSecret] = await Promise.all([
+    openEnvelope<SecretPayload>(secretKey, local.secret),
+    openEnvelope<SecretPayload>(secretKey, remoteRecord.secret),
+  ]);
+
+  if (remoteSecret.counter > localSecret.counter) {
+    await saveEncryptedRecord(remoteRecord);
+    return 'updated';
+  }
+
+  // Remote is outdated, keep local and mark for re-upload.
+  local.isSynced = false;
+  await saveEncryptedRecord(local);
+  return 'repair';
+}
+
+export async function assertionSecretSession<T>(
+  uniqueId: string,
+  callback: (secretPayload: SecretPayload) => Promise<T>,
+): Promise<T> {
   const pendingLock = counterLocks.get(uniqueId) ?? Promise.resolve();
 
-  const lockPromise = pendingLock.catch(() => undefined).then(async () => {
+  const assertionPromise = pendingLock.catch(() => undefined).then(async () => {
     const record = await getEncryptedRecord(uniqueId);
     if (!record) throw new Error('Credential not found');
 
     const secretKey = await deriveSecretKey();
     const secretPayload = await openEnvelope<SecretPayload>(secretKey, record.secret);
+    const result = await callback(secretPayload);
+
     secretPayload.counter++;
 
     const { credentialId, userHandle, publicKeyAlgorithm, privateKey, counter } = secretPayload;
-    const newSecret = await sealEnvelope(secretKey, { credentialId, userHandle, publicKeyAlgorithm, privateKey, counter });
+    const newSecret = await sealEnvelope(secretKey, {
+      credentialId,
+      userHandle,
+      publicKeyAlgorithm,
+      privateKey,
+      counter,
+    });
     const updated: EncryptedRecord = { ...record, secret: newSecret, isSynced: false };
     await saveEncryptedRecord(updated);
 
-    uploadPasskeyDirect(updated)
-      .then(async (result) => {
-        if (result.success) {
-          const marked = await markSyncedIfStillCurrent(updated);
-          if (!marked) {
-            logWarn('[Store] counter sync skipped: record changed since upload');
-          }
-        } else {
-          logWarn('[Store] counter sync Sia', result.error);
-        }
-      })
-      .catch((error) => {
-        logError('[Store] Error in async upload', error);
-      });
+    return result;
   });
 
-  counterLocks.set(uniqueId, lockPromise);
-  void lockPromise.finally(() => {
-    if (counterLocks.get(uniqueId) === lockPromise) {
+  const trackedLock = assertionPromise.catch(() => undefined).then(() => undefined);
+  counterLocks.set(uniqueId, trackedLock);
+  void trackedLock.finally(() => {
+    if (counterLocks.get(uniqueId) === trackedLock) {
       counterLocks.delete(uniqueId);
     }
   });
-  return lockPromise;
+
+  return assertionPromise;
 }
 
 // Utility Functions
@@ -406,11 +462,6 @@ export async function savePrivateKey(
 export async function handleMessageInBackground(message: BackgroundMessage): Promise<unknown> {
   try {
     switch (message.type) {
-      case 'updateCredentialCounter':
-        if (typeof message.uniqueId !== 'string') return { error: 'Invalid uniqueId' };
-        await updateCredentialCounter(message.uniqueId);
-        return { status: 'ok' };
-
       case 'getAllCredentialsMetadata':
         return getAllCredentialsMetadata();
 

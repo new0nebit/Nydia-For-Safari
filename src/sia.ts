@@ -7,6 +7,10 @@ const MIME_OCTET_STREAM = 'application/octet-stream';
 const QUERY_BUCKET = 'bucket';
 const QUERY_MIMETYPE = 'mimetype';
 
+export function fileNameToUniqueId(fileName: string): string {
+  return fileName.replace(/\.passkey$/, '');
+}
+
 function isValidEnvelope(value: unknown): value is EncryptedEnvelope {
   return Boolean(
     value &&
@@ -90,7 +94,11 @@ async function httpRequest(
   url: string,
   options: RequestInit,
 ): Promise<Response> {
-  logDebug('[Sia] Sending request', { url, options });
+  const requestURL = new URL(url);
+  logDebug('[Sia] Sending request', {
+    method: options.method ?? 'GET',
+    path: requestURL.pathname,
+  });
   const response = await fetch(url, options);
   logDebug('[Sia] Response status', { status: response.status });
 
@@ -113,8 +121,6 @@ export async function listPasskeysFromRenterd(
     headers: buildHeaders(settings),
   });
   const jsonData = (await response.json()) as { objects?: Array<{ key: string }> };
-  logDebug('[Sia] Parsed objects list', jsonData);
-
   const objects = jsonData.objects ?? [];
   const passkeyFiles = objects
     .map((object) => object.key.replace(/^\//, ''))
@@ -131,14 +137,14 @@ async function uploadPasskeyToRenterd(
   settings: RenterdSettings,
 ): Promise<void> {
   const fileName = `${uniqueId}${PASSKEY_EXTENSION}`;
-  logDebug('[Sia] Starting uploadPasskeyToRenterd', { fileName, settings });
+  logDebug('[Sia] Starting uploadPasskeyToRenterd', { fileName });
 
   await httpRequest(buildUploadURL(settings, fileName), {
     method: 'PUT',
     headers: buildHeaders(settings, MIME_OCTET_STREAM),
     body: passkeyData,
   });
-  logDebug('[Sia] Binary passkey blob stored on renterd', { fileName });
+  logDebug('[Sia] Passkey uploaded to renterd', { fileName });
 }
 
 // Download a passkey from renterd and return it as EncryptedRecord.
@@ -146,7 +152,7 @@ export async function downloadPasskeyFromRenterd(
   fileName: string,
   settings: RenterdSettings,
 ): Promise<EncryptedRecord> {
-  logDebug('[Sia] Starting downloadPasskeyFromRenterd', { fileName, settings });
+  logDebug('[Sia] Starting downloadPasskeyFromRenterd', { fileName });
 
   const response = await httpRequest(buildObjectURL(settings, fileName), {
     method: 'GET',
@@ -171,33 +177,29 @@ export async function downloadPasskeyFromRenterd(
 // Upload an encrypted passkey record to renterd.
 export async function uploadPasskeyDirect(
   record: EncryptedRecord,
-): Promise<{ success: boolean; message?: string; error?: string }> {
-  const settings = await getSettings();
-  if (!settings) {
-    return {
-      success: false,
-      error: 'Please configure renterd settings first.',
-    };
-  }
-
-  // Clone record and mark as synced.
-  const recordToUpload = { ...record, isSynced: true };
-  const passkeyDataJson = JSON.stringify(recordToUpload, null, 2);
-  const passkeyData = new Blob([passkeyDataJson], {
-    type: MIME_OCTET_STREAM,
-  });
-
+): Promise<{ success: true } | { success: false; error: string }> {
   try {
+    const settings = await getSettings();
+    if (!settings) {
+      return {
+        success: false,
+        error: 'Please configure renterd settings first.',
+      };
+    }
+
+    // Clone record and mark as synced.
+    const recordToUpload = { ...record, isSynced: true };
+    const passkeyDataJson = JSON.stringify(recordToUpload, null, 2);
+    const passkeyData = new Blob([passkeyDataJson], {
+      type: MIME_OCTET_STREAM,
+    });
+
     await uploadPasskeyToRenterd(passkeyData, record.uniqueId, settings);
     logDebug('[Sia] Encrypted record prepared and uploaded via renterd worker API', {
       uniqueId: record.uniqueId,
     });
-    return {
-      success: true,
-      message: 'Passkey successfully backed up to Sia.',
-    };
+    return { success: true };
   } catch (error: unknown) {
-    logError('[Sia] Error uploading encrypted passkey to renterd', error);
     const message = error instanceof Error ? error.message : String(error);
     return {
       success: false,
