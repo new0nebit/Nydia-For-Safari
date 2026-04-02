@@ -1,5 +1,4 @@
-import { logDebug, logError, logWarn } from './logger';
-import { uploadPasskeyDirect } from './sia';
+import { logDebug, logError } from './logger';
 import {
   BackgroundMessage,
   CredentialMetadata,
@@ -8,6 +7,7 @@ import {
   RenterdSettings,
   StoredCredential,
 } from './types';
+import type { ReconcileDecision } from './sync/types';
 import { base64UrlDecode, base64UrlEncode } from './utils/base64url';
 
 // Web Crypto API
@@ -18,9 +18,15 @@ const counterLocks: Map<string, Promise<void>> = new Map();
 
 // IndexedDB
 const DB_NAME = 'NydiaDB';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const PASSKEY_STORE = 'passkeys';
+const ETAGS_STORE = 'etags';
 const SETTINGS_STORE = 'settings';
+
+type PasskeyETag = {
+  uniqueId: string;
+  etag: string;
+};
 
 function setupStores(db: IDBDatabase) {
   if (!db.objectStoreNames.contains(PASSKEY_STORE)) {
@@ -28,6 +34,9 @@ function setupStores(db: IDBDatabase) {
   }
   if (!db.objectStoreNames.contains(SETTINGS_STORE)) {
     db.createObjectStore(SETTINGS_STORE, { keyPath: 'id' });
+  }
+  if (!db.objectStoreNames.contains(ETAGS_STORE)) {
+    db.createObjectStore(ETAGS_STORE, { keyPath: 'uniqueId' });
   }
 }
 
@@ -167,11 +176,23 @@ export type SecretPayload = {
   counter: number;
 };
 
-export async function openSecret(uniqueId: string): Promise<SecretPayload> {
+export async function isEncryptedRecordReadable(record: EncryptedRecord): Promise<boolean> {
+  try {
+    const [metadataKey, secretKey] = await Promise.all([deriveMetadataKey(), deriveSecretKey()]);
+    await Promise.all([
+      openEnvelope<MetadataPayload>(metadataKey, record.metadata),
+      openEnvelope<SecretPayload>(secretKey, record.secret),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function isStoredRecordReadable(uniqueId: string): Promise<boolean> {
   const record = await getEncryptedRecord(uniqueId);
-  if (!record) throw new Error('Credential not found');
-  const secretKey = await deriveSecretKey();
-  return openEnvelope<SecretPayload>(secretKey, record.secret);
+  if (!record) return false;
+  return isEncryptedRecordReadable(record);
 }
 
 // Settings Management
@@ -193,6 +214,42 @@ export async function getSettings(): Promise<RenterdSettings | null> {
       .objectStore(SETTINGS_STORE)
       .get('renterdSettings').onsuccess = (event) =>
         resolve((event.target as IDBRequest<RenterdSettings>).result ?? null);
+  });
+}
+
+export async function getAllPasskeyETags(): Promise<Map<string, string>> {
+  const db = await openDB();
+  const states: PasskeyETag[] = await new Promise((resolve) => {
+    db
+      .transaction(ETAGS_STORE, 'readonly')
+      .objectStore(ETAGS_STORE)
+      .getAll().onsuccess = (event) =>
+        resolve((event.target as IDBRequest<PasskeyETag[]>).result ?? []);
+  });
+
+  return new Map(states.map(({ uniqueId, etag }) => [uniqueId, etag]));
+}
+
+export async function getPasskeyETag(uniqueId: string): Promise<string | null> {
+  const db = await openDB();
+  const state: PasskeyETag | undefined = await new Promise((resolve) => {
+    db
+      .transaction(ETAGS_STORE, 'readonly')
+      .objectStore(ETAGS_STORE)
+      .get(uniqueId).onsuccess = (event) =>
+        resolve((event.target as IDBRequest<PasskeyETag | undefined>).result ?? undefined);
+  });
+
+  return state?.etag ?? null;
+}
+
+export async function savePasskeyETag(uniqueId: string, etag: string): Promise<void> {
+  const db = await openDB();
+  await new Promise<void>((resolve) => {
+    db
+      .transaction(ETAGS_STORE, 'readwrite')
+      .objectStore(ETAGS_STORE)
+      .put({ uniqueId, etag }).onsuccess = () => resolve();
   });
 }
 
@@ -282,8 +339,19 @@ export async function getEncryptedRecord(
   });
 }
 
+export async function getAllEncryptedRecords(): Promise<EncryptedRecord[]> {
+  const db = await openDB();
+  return new Promise((resolve) => {
+    db
+      .transaction(PASSKEY_STORE, 'readonly')
+      .objectStore(PASSKEY_STORE)
+      .getAll().onsuccess = (event) =>
+        resolve((event.target as IDBRequest<EncryptedRecord[]>).result ?? []);
+  });
+}
+
 // Save encrypted credential directly to DB
-export async function saveEncryptedRecord(record: EncryptedRecord): Promise<void> {
+async function saveEncryptedRecord(record: EncryptedRecord): Promise<void> {
   const db = await openDB();
   await new Promise<void>((resolve) => {
     db
@@ -293,38 +361,110 @@ export async function saveEncryptedRecord(record: EncryptedRecord): Promise<void
   });
 }
 
-// counter + Sia sync
-export function updateCredentialCounter(uniqueId: string): Promise<void> {
+function isEncryptedPayloadIdentical(a: EncryptedRecord, b: EncryptedRecord): boolean {
+  return (
+    a.metadata.iv === b.metadata.iv &&
+    a.metadata.data === b.metadata.data &&
+    a.secret.iv === b.secret.iv &&
+    a.secret.data === b.secret.data
+  );
+}
+
+export async function markSyncedIfStillCurrent(
+  uploadedRecord: EncryptedRecord,
+): Promise<boolean> {
+  const db = await openDB();
+  return new Promise<boolean>((resolve, reject) => {
+    const transaction = db.transaction(PASSKEY_STORE, 'readwrite');
+    const store = transaction.objectStore(PASSKEY_STORE);
+
+    transaction.onerror = () => reject(transaction.error ?? new Error('Failed to mark synced'));
+
+    store.get(uploadedRecord.uniqueId).onsuccess = (event) => {
+      const current = (event.target as IDBRequest<EncryptedRecord>).result;
+      if (!current || !isEncryptedPayloadIdentical(current, uploadedRecord)) {
+        resolve(false);
+        return;
+      }
+      current.isSynced = true;
+      store.put(current).onsuccess = () => resolve(true);
+    };
+  });
+}
+
+export async function reconcileRemoteRecord(
+  remoteRecord: EncryptedRecord,
+): Promise<ReconcileDecision> {
+  const local = await getEncryptedRecord(remoteRecord.uniqueId);
+
+  if (!local) {
+    await saveEncryptedRecord(remoteRecord);
+    return 'new';
+  }
+
+  if (isEncryptedPayloadIdentical(local, remoteRecord)) {
+    if (!local.isSynced) {
+      await markSyncedIfStillCurrent(local);
+    }
+    return 'identical';
+  }
+
+  const secretKey = await deriveSecretKey();
+  const [localSecret, remoteSecret] = await Promise.all([
+    openEnvelope<SecretPayload>(secretKey, local.secret),
+    openEnvelope<SecretPayload>(secretKey, remoteRecord.secret),
+  ]);
+
+  if (remoteSecret.counter > localSecret.counter) {
+    await saveEncryptedRecord(remoteRecord);
+    return 'updated';
+  }
+
+  // Remote is outdated, keep local and mark for re-upload.
+  local.isSynced = false;
+  await saveEncryptedRecord(local);
+  return 'repair';
+}
+
+export async function assertionSecretSession<T>(
+  uniqueId: string,
+  callback: (secretPayload: SecretPayload) => Promise<T>,
+): Promise<T> {
   const pendingLock = counterLocks.get(uniqueId) ?? Promise.resolve();
 
-  const lockPromise = pendingLock.then(async () => {
+  const assertionPromise = pendingLock.catch(() => undefined).then(async () => {
     const record = await getEncryptedRecord(uniqueId);
     if (!record) throw new Error('Credential not found');
 
     const secretKey = await deriveSecretKey();
     const secretPayload = await openEnvelope<SecretPayload>(secretKey, record.secret);
+    const result = await callback(secretPayload);
+
     secretPayload.counter++;
 
     const { credentialId, userHandle, publicKeyAlgorithm, privateKey, counter } = secretPayload;
-    const newSecret = await sealEnvelope(secretKey, { credentialId, userHandle, publicKeyAlgorithm, privateKey, counter });
+    const newSecret = await sealEnvelope(secretKey, {
+      credentialId,
+      userHandle,
+      publicKeyAlgorithm,
+      privateKey,
+      counter,
+    });
     const updated: EncryptedRecord = { ...record, secret: newSecret, isSynced: false };
     await saveEncryptedRecord(updated);
 
-    uploadPasskeyDirect(updated).then(async (result) => {
-      if (result.success) {
-        updated.isSynced = true;
-        await saveEncryptedRecord(updated);
-      } else {
-        logWarn('[Store] counter sync Sia', result.error);
-      }
-    }).catch((error) => {
-      logError('[Store] Error in async upload', error);
-    });
+    return result;
   });
 
-  counterLocks.set(uniqueId, lockPromise);
-  void lockPromise.finally(() => counterLocks.delete(uniqueId));
-  return lockPromise;
+  const trackedLock = assertionPromise.catch(() => undefined).then(() => undefined);
+  counterLocks.set(uniqueId, trackedLock);
+  void trackedLock.finally(() => {
+    if (counterLocks.get(uniqueId) === trackedLock) {
+      counterLocks.delete(uniqueId);
+    }
+  });
+
+  return assertionPromise;
 }
 
 // Utility Functions
@@ -367,11 +507,6 @@ export async function savePrivateKey(
 export async function handleMessageInBackground(message: BackgroundMessage): Promise<unknown> {
   try {
     switch (message.type) {
-      case 'updateCredentialCounter':
-        if (typeof message.uniqueId !== 'string') return { error: 'Invalid uniqueId' };
-        await updateCredentialCounter(message.uniqueId);
-        return { status: 'ok' };
-
       case 'getAllCredentialsMetadata':
         return getAllCredentialsMetadata();
 
@@ -387,8 +522,9 @@ export async function handleMessageInBackground(message: BackgroundMessage): Pro
         if (typeof message.uniqueId !== 'string') return { error: 'Invalid uniqueId' };
         const db = await openDB();
         await new Promise<void>((resolve, reject) => {
-          const transaction = db.transaction(PASSKEY_STORE, 'readwrite');
+          const transaction = db.transaction([PASSKEY_STORE, ETAGS_STORE], 'readwrite');
           transaction.objectStore(PASSKEY_STORE).delete(message.uniqueId!);
+          transaction.objectStore(ETAGS_STORE).delete(message.uniqueId!);
           transaction.oncomplete = () => resolve();
           transaction.onerror = () => reject(transaction.error ?? new Error('Failed to delete credential'));
         });

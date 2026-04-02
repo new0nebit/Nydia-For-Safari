@@ -7,22 +7,11 @@ import {
   showSettingsForm,
   validateSettings,
 } from './settings';
-import { CredentialMetadata } from './types';
+import type { FullSyncSummary, UploadResult } from './sync/types';
+import type { CredentialMetadata } from './types';
 
 type NotificationType = 'success' | 'error' | 'info' | 'warning';
 type ModalType = 'confirm';
-
-interface SyncUploadResult {
-  uploadedCount: number;
-  failedCount: number;
-  error: boolean;
-}
-interface SyncDownloadResult {
-  syncedCount: number;
-  failedCount: number;
-  empty: boolean;
-  error: boolean;
-}
 
 // Domain Sanitisation
 function sanitizeDomain(domain: string): string {
@@ -125,7 +114,7 @@ function notify(type: NotificationType, title: string, message: string): void {
 
   const root = document.getElementById('root');
   root?.prepend(alert);
-  setTimeout(() => alert.remove(), 3_000);
+  setTimeout(() => alert.remove(), 4_000);
 }
 
 function modal(type: ModalType, title: string, message: string): Promise<boolean> {
@@ -237,7 +226,7 @@ export class Menu {
     document.addEventListener('DOMContentLoaded', () => {
       void this.init().catch((error: unknown) => {
         logError('[Menu] init error', error);
-        notify('error', 'Error', 'Failed to initialize menu');
+        notify('error', 'Error', 'Failed to initialize menu.');
       });
     });
   }
@@ -504,15 +493,20 @@ export class Menu {
       const response = (await browser.runtime.sendMessage({
         type: 'uploadToSia',
         uniqueId: passkey.uniqueId,
-      })) as { success?: boolean; message?: string; error?: string };
-      if (response?.success) {
+      })) as UploadResult;
+      if (response.success) {
         passkey.isSynced = true;
         button.classList.replace('button-green', 'button-sync');
         updateButtonContent(button, icons.check, 'Synced');
-        notify('success', 'Success', response.message ?? 'Uploaded successfully');
+        notify('success', 'Success!', 'Passkey uploaded to Sia.');
         await this.render();
       } else {
-        throw new Error(response?.error ?? 'Upload failed');
+        notify('error', 'Error', response.error);
+        updateButtonContent(
+          button,
+          passkey.isSynced ? icons.check : icons.sia,
+          passkey.isSynced ? 'Synced' : 'Backup to Sia',
+        );
       }
     } catch (error) {
       logError('[Menu] backup error', error);
@@ -540,76 +534,57 @@ export class Menu {
     }
 
     try {
-      const [uploadResult, downloadResult] = await Promise.all([
-        this.uploadUnsynced(),
-        this.downloadNew(),
-      ]);
+      const response = (await browser.runtime.sendMessage({ type: 'fullSync' })) as
+        | FullSyncSummary
+        | { error: string };
 
-      let type: NotificationType;
-      let message: string;
-
-      if (uploadResult.error || downloadResult.error) {
-        type = 'error';
-        message = 'Error syncing Passkeys with renterd server.';
-      } else if (uploadResult.failedCount || downloadResult.failedCount) {
-        type = 'warning';
-        message = 'Some passkeys failed to synchronize.';
-      } else if (downloadResult.empty) {
-        type = 'info';
-        message = 'No new passkeys found on renterd server.';
-      } else {
-        type = 'success';
-        message = `Synchronized ${downloadResult.syncedCount} passkey(s).`;
+      if ('error' in response) {
+        notify('error', 'Error', 'Error syncing Passkeys with renterd server.');
+        await this.render();
+        return;
       }
 
-      notify(type, type.charAt(0).toUpperCase() + type.slice(1), message);
+      const {
+        uploadedCount,
+        downloadedCount,
+        updatedCount,
+        repairedCount,
+        unreadableCount,
+        failedCount,
+      } = response;
+
+      const successDetails: string[] = [];
+      if (uploadedCount) successDetails.push(`${uploadedCount}\u00A0uploaded`);
+      if (downloadedCount) successDetails.push(`${downloadedCount}\u00A0downloaded`);
+      if (updatedCount) successDetails.push(`${updatedCount}\u00A0updated`);
+      if (repairedCount) successDetails.push(`${repairedCount}\u00A0repaired`);
+
+      const issueDetails: string[] = [];
+      if (unreadableCount) issueDetails.push(`${unreadableCount}\u00A0unreadable`);
+      if (failedCount) issueDetails.push(`${failedCount}\u00A0failed`);
+
+      if (issueDetails.length) {
+        const issueMessage = issueDetails.length > 1
+          ? `Sync issues: ${issueDetails.join(', ')}.`
+          : unreadableCount
+            ? `${unreadableCount} passkey(s) could not be read with the current recovery phrase.`
+            : `${failedCount} passkey(s) failed to synchronize.`;
+
+        notify('warning', 'Warning', issueMessage);
+      }
+
+      if (successDetails.length) {
+        notify('success', 'Success!', `Synced passkeys: ${successDetails.join(', ')}.`);
+      } else if (!issueDetails.length) {
+        notify('info', 'Info', 'Everything is up to date.');
+      }
+
       await this.render();
     } catch (error) {
       logError('[Menu] sync error', error);
       notify('error', 'Error', 'Error syncing Passkeys with renterd server.');
     } finally {
       resetSyncButton(button);
-    }
-  }
-
-  private async uploadUnsynced(): Promise<SyncUploadResult> {
-    const all = (await browser.runtime.sendMessage({ type: 'getAllCredentialsMetadata' })) as CredentialMetadata[];
-    const unsynced = all.filter((credential) => !credential.isSynced);
-    if (!unsynced.length) return { uploadedCount: 0, failedCount: 0, error: false };
-
-    try {
-      const uniqueIds = unsynced.map((credential) => credential.uniqueId);
-      const response = (await browser.runtime.sendMessage({
-        type: 'uploadUnsyncedPasskeys',
-        uniqueIds,
-      })) as { uploadedCount?: number; failedCount?: number; success?: boolean };
-      return {
-        uploadedCount: response?.uploadedCount ?? 0,
-        failedCount: response?.failedCount ?? 0,
-        error: !response?.success,
-      };
-    } catch (error) {
-      logError('[Menu] uploadUnsynced error', error);
-      return { uploadedCount: 0, failedCount: unsynced.length, error: true };
-    }
-  }
-
-  private async downloadNew(): Promise<SyncDownloadResult> {
-    try {
-      const response = (await browser.runtime.sendMessage({ type: 'syncFromSia' })) as {
-        syncedCount?: number;
-        failedCount?: number;
-        success?: boolean;
-      };
-      return {
-        syncedCount: response?.syncedCount ?? 0,
-        failedCount: response?.failedCount ?? 0,
-        empty: !response?.syncedCount && !response?.failedCount,
-        error: !response?.success,
-      };
-    } catch (error) {
-      logError('[Menu] downloadNew error', error);
-      return { syncedCount: 0, failedCount: 0, empty: true, error: true };
     }
   }
 }

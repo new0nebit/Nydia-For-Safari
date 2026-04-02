@@ -5,18 +5,12 @@ import {
 } from './authenticator';
 import { logDebug, logError, logInfo } from './logger';
 import {
-  downloadPasskeyFromRenterd,
-  listPasskeysFromRenterd,
-  uploadPasskeyDirect,
-} from './sia';
-import {
-  getEncryptedRecord,
-  getSettings,
   handleMessageInBackground,
-  saveEncryptedRecord,
   getRootKeyIfAvailable,
   setRootKey,
 } from './store';
+import { enqueueUpload } from './sync/uploader';
+import { handleFullSync } from './sync/syncer';
 import {
   BackgroundMessage,
   CredentialCreationOptions,
@@ -143,69 +137,6 @@ function isBackgroundMessage(message: unknown): message is BackgroundMessage {
   );
 }
 
-// Handles the upload of a single passkey to renterd
-async function handleUploadToSia(uniqueId: string) {
-  // Get encrypted record directly from DB
-  const encryptedRecord = await getEncryptedRecord(uniqueId);
-  if (!encryptedRecord) {
-    return { success: false, error: 'Passkey not found' };
-  }
-
-  // Upload encrypted record as-is
-  const result = await uploadPasskeyDirect(encryptedRecord);
-
-  // If upload successful, update isSynced flag
-  if (result.success) {
-    encryptedRecord.isSynced = true;
-    await saveEncryptedRecord(encryptedRecord);
-  }
-
-  return result;
-}
-
-// Handles uploading multiple unsynced passkeys to renterd
-async function handleUploadUnsyncedPasskeys(uniqueIds: string[]) {
-  let uploaded = 0,
-    failed = 0;
-
-  for (const uniqueId of uniqueIds) {
-    try {
-      const { success } = await handleUploadToSia(uniqueId);
-      if (success) uploaded++;
-      else failed++;
-    } catch (error: unknown) {
-      logError(`[Background] Upload failed for ${uniqueId}`, error);
-      failed++;
-    }
-  }
-
-  return { success: failed === 0, uploadedCount: uploaded, failedCount: failed };
-}
-
-// Handles syncing passkeys from renterd to the extension
-async function handleSyncFromSia() {
-  const settings = await getSettings();
-  if (!settings) return { success: false, error: 'No renterd settings' };
-
-  const files = await listPasskeysFromRenterd(settings);
-  let synced = 0,
-    failed = 0;
-
-  for (const fileName of files) {
-    try {
-      const encryptedRecord = await downloadPasskeyFromRenterd(fileName, settings);
-
-      // Save encrypted record directly to DB
-      await saveEncryptedRecord(encryptedRecord);
-      synced++;
-    } catch (error: unknown) {
-      logError(`[Background] Sync failed for ${fileName}`, error);
-      failed++;
-    }
-  }
-  return { success: failed === 0, syncedCount: synced, failedCount: failed };
-}
-
 async function handleGetWrappingPublicKey() {
   try {
     if (!wrappingKeyPair) {
@@ -315,15 +246,11 @@ async function router(message: BackgroundMessage): Promise<unknown> {
         );
 
       case 'uploadToSia':
-        if (!message.uniqueId) return { error: 'Missing uniqueId' };
-        return await handleUploadToSia(message.uniqueId);
+        if (!message.uniqueId) return { success: false, error: 'Missing uniqueId' };
+        return await enqueueUpload(message.uniqueId);
 
-      case 'uploadUnsyncedPasskeys':
-        if (!message.uniqueIds) return { error: 'Missing uniqueIds' };
-        return await handleUploadUnsyncedPasskeys(message.uniqueIds);
-
-      case 'syncFromSia':
-        return await handleSyncFromSia();
+      case 'fullSync':
+        return await handleFullSync();
 
       case 'getWrappingPublicKey':
         return await handleGetWrappingPublicKey();
