@@ -6,10 +6,10 @@ import {
   getAllCredentialsMetadata,
   getCredentialsMetadataByUniqueIds,
   getEncryptedRecord,
-  assertionSecretSession,
+  openSecret,
   savePrivateKey,
+  updateCredentialCounter,
 } from './store';
-import { enqueueUpload } from './sync/uploader';
 import type { SecretPayload } from './store';
 import {
   Account,
@@ -131,8 +131,9 @@ function chooseAlgorithm(
 
 // Load private key from stored credential and prepare it for signing
 async function loadPrivateKey(
-  secretPayload: SecretPayload,
-): Promise<[CryptoKey, SigningAlgorithm]> {
+  uniqueId: string,
+): Promise<[CryptoKey, SigningAlgorithm, SecretPayload]> {
+  const secretPayload = await openSecret(uniqueId);
   const pkcs8 = new Uint8Array(base64UrlDecode(secretPayload.privateKey));
 
   let algorithmParams: EcKeyImportParams | RsaHashedImportParams | Algorithm;
@@ -156,7 +157,7 @@ async function loadPrivateKey(
   }
 
   const privateKey = await subtle.importKey('pkcs8', pkcs8, algorithmParams, false, ['sign']);
-  return [privateKey, signingAlgorithm];
+  return [privateKey, signingAlgorithm, secretPayload];
 }
 
 // Convert buffer to hexadecimal string
@@ -202,7 +203,7 @@ export async function createCredential(
   options: CredentialCreationOptions,
 ): Promise<AttestationResponse> {
   logInfo('[Authenticator] Starting credential creation...');
-  logDebug('[Authenticator] Creation options', options);
+  logDebug('[Authenticator] Options', options);
 
   try {
     if (!options.publicKey) {
@@ -395,14 +396,50 @@ export async function createCredential(
   }
 }
 
-async function buildSignedAssertionResponse(
+// Sign the challenge using the credential identified by selectedUniqueId
+export async function handleGetAssertion(
   options: GetAssertionOptions,
-  rpId: string,
-  challengeString: string,
-  secretPayload: SecretPayload,
+  selectedUniqueId: string,
 ): Promise<AssertionResponse> {
-  // Load private key and signing algorithm
-  const [privateKey, algorithm] = await loadPrivateKey(secretPayload);
+  logInfo('[Authenticator] Starting assertion handling...');
+  logDebug('[Authenticator] Assertion options', options);
+
+  // Check for the presence of the challenge
+  if (!options.publicKey || !options.publicKey.challenge) {
+    throw new Error('Challenge is missing in the options');
+  }
+
+  // Decode the challenge
+  let challengeBuffer: Uint8Array;
+  let challengeString: string;
+
+  if (typeof options.publicKey.challenge === 'string') {
+    // Challenge as base64url string
+    challengeBuffer = new Uint8Array(toArrayBuffer(options.publicKey.challenge));
+    challengeString = options.publicKey.challenge;
+  } else {
+    // Challenge as binary (ArrayBuffer or Uint8Array)
+    challengeBuffer = new Uint8Array(toArrayBuffer(options.publicKey.challenge));
+    challengeString = base64UrlEncode(challengeBuffer);
+  }
+
+  logDebug('[Authenticator] Challenge buffer (hex)', bufferToHex(challengeBuffer));
+  logDebug('[Authenticator] Challenge string', challengeString);
+
+  // Determine rpId
+  const rpId = options.publicKey.rpId;
+  if (!rpId) {
+    throw new Error('rpId is missing in assertion options');
+  }
+  logDebug('[Authenticator] Using rpId', rpId);
+
+  const allowedUniqueIds = await resolveAllowedUniqueIds(rpId, options.publicKey.allowCredentials);
+  if (allowedUniqueIds && !allowedUniqueIds.has(selectedUniqueId)) {
+    throw new DOMException('Selected credential is not allowed for this request', 'NotAllowedError');
+  }
+
+  // Load private key, algorithm, and secret payload
+  const [privateKey, algorithm, secretPayload] = await loadPrivateKey(selectedUniqueId);
 
   logDebug('[Authenticator] Loaded private key', {
     alg: secretPayload.publicKeyAlgorithm,
@@ -496,6 +533,9 @@ async function buildSignedAssertionResponse(
 
   logDebug('[Authenticator] Signature (base64url)', base64UrlEncode(signature));
 
+  // Update credential counter
+  await updateCredentialCounter(selectedUniqueId);
+
   // Construct the response
   const response: AssertionResponse = {
     type: 'public-key',
@@ -511,55 +551,6 @@ async function buildSignedAssertionResponse(
 
   logDebug('[Authenticator] Assertion response', response);
 
-  return response;
-}
-
-// Handle an assertion request and return a signed response for the selected credential.
-export async function handleGetAssertion(
-  options: GetAssertionOptions,
-  selectedUniqueId: string,
-): Promise<AssertionResponse> {
-  logInfo('[Authenticator] Starting assertion handling...');
-  logDebug('[Authenticator] Assertion options', options);
-
-  // Check for the presence of the challenge
-  if (!options.publicKey || !options.publicKey.challenge) {
-    throw new Error('Challenge is missing in the options');
-  }
-
-  // Decode the challenge
-  let challengeBuffer: Uint8Array;
-  let challengeString: string;
-
-  if (typeof options.publicKey.challenge === 'string') {
-    // Challenge as base64url string
-    challengeBuffer = new Uint8Array(toArrayBuffer(options.publicKey.challenge));
-    challengeString = options.publicKey.challenge;
-  } else {
-    // Challenge as binary (ArrayBuffer or Uint8Array)
-    challengeBuffer = new Uint8Array(toArrayBuffer(options.publicKey.challenge));
-    challengeString = base64UrlEncode(challengeBuffer);
-  }
-
-  logDebug('[Authenticator] Challenge buffer (hex)', bufferToHex(challengeBuffer));
-  logDebug('[Authenticator] Challenge string', challengeString);
-
-  // Determine rpId
-  const rpId = options.publicKey.rpId;
-  if (!rpId) {
-    throw new Error('rpId is missing in assertion options');
-  }
-  logDebug('[Authenticator] Using rpId', rpId);
-
-  const allowedUniqueIds = await resolveAllowedUniqueIds(rpId, options.publicKey.allowCredentials);
-  if (allowedUniqueIds && !allowedUniqueIds.has(selectedUniqueId)) {
-    throw new DOMException('Selected credential is not allowed for this request', 'NotAllowedError');
-  }
-
-  const response = await assertionSecretSession(selectedUniqueId, async (secretPayload) =>
-    buildSignedAssertionResponse(options, rpId, challengeString, secretPayload),
-  );
-  void enqueueUpload(selectedUniqueId);
   return response;
 }
 
