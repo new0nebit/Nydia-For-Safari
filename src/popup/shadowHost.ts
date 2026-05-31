@@ -1,5 +1,4 @@
-import { logDebug, logError } from '../logger';
-import { applyIframeColorScheme, detectHostIsDark } from './colorScheme';
+import { logError } from '../logger';
 import {
   PopupErrorMessage,
   PopupFrameMessage,
@@ -47,12 +46,16 @@ function createShadowHost(): {
   const frame = document.createElement('div');
   frame.className = 'nydia-frame';
 
+  const shell = document.createElement('div');
+  shell.className = 'nydia-popup-shell';
+
   const iframe = document.createElement('iframe');
   iframe.src = popupUrl;
   iframe.title = 'Nydia Passkey';
   iframe.setAttribute('aria-label', 'Nydia Passkey');
 
-  frame.appendChild(iframe);
+  shell.appendChild(iframe);
+  frame.appendChild(shell);
   shadow.appendChild(overlay);
   shadow.appendChild(frame);
 
@@ -73,10 +76,6 @@ export async function showPopup(
     const { container, iframe, shadowRoot } = createShadowHost();
     const { port1, port2 } = new MessageChannel();
     const sessionId = createSessionId();
-
-    const hostIsDark = detectHostIsDark();
-    logDebug('[PopupHost] Host color scheme', hostIsDark ? 'Dark' : 'Light');
-    applyIframeColorScheme(iframe, hostIsDark);
 
     return await new Promise((resolve) => {
       let actionInFlight = false;
@@ -112,6 +111,19 @@ export async function showPopup(
       const onMessage = async (event: MessageEvent) => {
         const message = event.data as PopupFrameMessage | undefined;
         if (!message || message.sessionId !== sessionId) {
+          return;
+        }
+
+        if (message.type === PopupMessage.Resize) {
+          const { width, height } = message;
+          iframe.style.width = `${width}px`;
+          iframe.style.height = `${height}px`;
+
+          // Center popup around a fixed anchor point (~33% of viewport).
+          const anchor = Math.min(window.innerHeight * 0.33, 350);
+          const top = Math.max(32, Math.round(anchor - height / 2));
+          const frame = iframe.parentElement?.parentElement;
+          if (frame) frame.style.paddingTop = `${top}px`;
           return;
         }
 
@@ -153,7 +165,7 @@ export async function showPopup(
           const initMessage: PopupInitMessage = {
             type: PopupMessage.Init,
             sessionId,
-            payload: { ...payload, hostIsDark },
+            payload,
           };
           iframe.contentWindow?.postMessage(initMessage, popupOrigin, [port2]);
           focusManager?.focusPopup();
