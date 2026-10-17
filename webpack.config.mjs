@@ -64,7 +64,7 @@ export default (env, argv) => {
       ],
     },
     resolve: {
-      extensions: ['.ts', '.css'],
+      extensions: ['.ts', '.js', '.css'],
     },
     output: {
       filename: '[name].js',
