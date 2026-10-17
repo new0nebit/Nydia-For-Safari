@@ -8,7 +8,6 @@ const backgroundPath = fileURLToPath(new URL('../.test-build/background.js', imp
 const require = createRequire(import.meta.url);
 
 let messageListener;
-let rootKeyAvailable = true;
 let rootKeyCalls = 0;
 const calls = {
   create: [],
@@ -44,7 +43,7 @@ const authenticatorMock = {
 const storeMock = {
   async getRootKeyIfAvailable() {
     rootKeyCalls += 1;
-    return rootKeyAvailable;
+    return true;
   },
   async getEncryptedRecord() {
     throw new Error('Unexpected getEncryptedRecord call');
@@ -117,7 +116,6 @@ function sender(origin) {
 }
 
 function resetCalls() {
-  rootKeyAvailable = true;
   rootKeyCalls = 0;
   calls.create.length = 0;
   calls.get.length = 0;
@@ -250,7 +248,10 @@ test('background listener blocks invalid RP IDs before storage and authenticator
 // Neither sender rejection nor shape rejection may probe local keys/settings.
 for (const operation of ['createCredential', 'handleGetAssertion']) {
   for (const trusted of [false, true]) {
-    test(`${operation} checks the sender before malformed publicKey data (trusted=${trusted})`, async () => {
+    const title = trusted
+      ? `${operation}: rejects malformed publicKey from a trusted sender`
+      : `${operation}: rejects an untrusted sender before validating publicKey`;
+    test(title, async () => {
       for (const publicKey of [undefined, null, '', 'bad', 1, true, [], ['bad']]) {
         resetCalls();
         const response = await messageListener(
@@ -359,8 +360,8 @@ test('background listener refuses a plain HTTP sender on every WebAuthn route', 
   assert.equal(calls.available.length, 0);
 });
 
-// The one exception the platform itself makes: localhost is a secure context,
-// so a local development relying party keeps working over plain http.
+// Nydia permits plain HTTP for the exact localhost hostname so local
+// development relying parties keep working.
 test('background listener accepts a plain HTTP localhost sender', async () => {
   resetCalls();
 
@@ -419,5 +420,43 @@ test('background listener keeps the DOMException name of an authenticator error'
     });
   } finally {
     authenticatorMock.createCredential = createCredential;
+  }
+});
+
+// A valid request from a trusted page still needs a vault that is set up:
+// without a root key, creation and discovery stop before the authenticator.
+test('background listener stops valid requests without a root key', async () => {
+  const getRootKeyIfAvailable = storeMock.getRootKeyIfAvailable;
+  storeMock.getRootKeyIfAvailable = async () => {
+    rootKeyCalls += 1;
+    return null;
+  };
+  try {
+    resetCalls();
+    const create = await messageListener(
+      {
+        type: 'createCredential',
+        options: {
+          publicKey: {
+            rp: { id: 'example.com', name: 'Example' },
+            user: { id: 'AQ', name: 'person@example.com' },
+            challenge: 'AQ',
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+          },
+        },
+      },
+      sender('https://login.example.com'),
+    );
+    const available = await messageListener(
+      { type: 'getAvailableCredentials', rpId: 'example.com' },
+      sender('https://login.example.com'),
+    );
+
+    assert.deepEqual(create, { error: 'rootKeyMissing' });
+    assert.deepEqual(available, { error: 'rootKeyMissing' });
+    assert.equal(rootKeyCalls, 2);
+    assert.deepEqual(calls, { create: [], get: [], available: [] });
+  } finally {
+    storeMock.getRootKeyIfAvailable = getRootKeyIfAvailable;
   }
 });

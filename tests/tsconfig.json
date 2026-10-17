@@ -10,6 +10,7 @@
   "include": [
     "../src/background.ts",
     "../src/store.ts",
+    "../src/utils/der.ts",
     "../src/utils/domError.ts",
     "../src/utils/rpId.ts",
     "../src/dispatcher.ts",
