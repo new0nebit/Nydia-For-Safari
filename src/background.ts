@@ -139,7 +139,7 @@ function isBackgroundMessage(message: unknown): message is BackgroundMessage {
     typeof message === 'object' &&
     message !== null &&
     'type' in message &&
-    typeof (message as { type: unknown }).type === 'string'
+    typeof message.type === 'string'
   );
 }
 
