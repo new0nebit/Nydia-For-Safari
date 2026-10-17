@@ -32,7 +32,7 @@ function frontend() {
 }
 
 for (const [operation, name] of [['create', 'InvalidStateError'], ['get', 'EncodingError']]) {
-  test(`real ${operation} pipeline preserves ${name} from background to the RP`, { timeout: 2000 }, async () => {
+  test(`${operation}: preserves ${name} from background to the page`, { timeout: 2000 }, async () => {
     outcome = name;
     authenticatorCalls = 0;
     const { navigator, metrics, posts } = frontend();
@@ -56,7 +56,7 @@ for (const [operation, name] of [['create', 'InvalidStateError'], ['get', 'Encod
   });
 }
 
-test('real create pipeline returns pre-popup SecurityError to the RP', { timeout: 2000 }, async () => {
+test('create: rejects with SecurityError before opening the confirmation window', { timeout: 2000 }, async () => {
   authenticatorCalls = 0;
   const { navigator, metrics } = frontend();
   await assert.rejects(navigator.credentials.create({ publicKey: {

@@ -31,9 +31,10 @@ export function loadWithMocks(name, mocks) {
   }
 }
 
-// Starts the real background listener around the given authenticator. Messages
-// sent through the returned browser arrive as if from a top-frame tab at ORIGIN.
-export function startBackground(authenticator) {
+// Starts the real background listener around the given authenticator and store.
+// Messages sent through the returned browser arrive as if from a top-frame tab at
+// ORIGIN.
+export function startBackground(authenticator, store = { async getRootKeyIfAvailable() { return true; } }) {
   let listener;
   const browser = {
     runtime: {
@@ -51,7 +52,7 @@ export function startBackground(authenticator) {
     loadWithMocks('background.js', {
       './authenticator': authenticator,
       './logger': quiet,
-      './store': { async getRootKeyIfAvailable() { return true; } },
+      './store': store,
       './sia': {},
     });
   } finally {
@@ -88,7 +89,7 @@ export function startPage({ browser, showPopup, native, globals = {} }) {
   window.top = window;
   const navigator = { credentials: native };
   const document = {
-    createElement() { return { remove() {} }; },
+    createElement() { return {}; },
     head: { appendChild() {} },
   };
   const dependencies = {

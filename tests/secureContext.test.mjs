@@ -8,7 +8,11 @@ for (const entry of ['dispatcher', 'injector']) {
     const window = { isSecureContext: false };
     window.self = window;
     window.top = window;
-    const credentials = Object.freeze({ create() {}, get() {} });
+    // The page's own WebAuthn must stay as it was: neither replaced nor called.
+    const credentials = Object.freeze({
+      create() { throw new Error('Unexpected native create call'); },
+      get() { throw new Error('Unexpected native get call'); },
+    });
     let documentAccesses = 0;
     const context = {
       window,

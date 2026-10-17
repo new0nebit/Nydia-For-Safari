@@ -36,7 +36,7 @@ test('toDomException rebuilds whitelisted names and collapses the rest to NotAll
   assert.equal(toDomException(undefined, 'InvalidStateError').message, 'Operation failed');
 });
 
-test('popup hop propagates WebAuthn DOMExceptions but keeps plain errors local', () => {
+test('isWebAuthnDomException: accepts supported DOMExceptions and rejects other errors', () => {
   assert.equal(
     isWebAuthnDomException(new DOMException('already registered', 'InvalidStateError')),
     true,
@@ -48,7 +48,7 @@ test('popup hop propagates WebAuthn DOMExceptions but keeps plain errors local',
   );
 });
 
-test('sanitizeDomErrorName gate', () => {
+test('sanitizeDomErrorName: keeps supported names and maps others to NotAllowedError', () => {
   assert.equal(sanitizeDomErrorName('InvalidStateError'), 'InvalidStateError');
   assert.equal(sanitizeDomErrorName('EvilError'), 'NotAllowedError');
   assert.equal(sanitizeDomErrorName(undefined), 'NotAllowedError');
