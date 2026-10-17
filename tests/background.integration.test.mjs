@@ -8,7 +8,6 @@ const backgroundPath = fileURLToPath(new URL('../.test-build/background.js', imp
 const require = createRequire(import.meta.url);
 
 let messageListener;
-let rootKeyAvailable = true;
 let rootKeyCalls = 0;
 const calls = {
   create: [],
@@ -44,7 +43,7 @@ const authenticatorMock = {
 const storeMock = {
   async getRootKeyIfAvailable() {
     rootKeyCalls += 1;
-    return rootKeyAvailable;
+    return true;
   },
   async getEncryptedRecord() {
     throw new Error('Unexpected getEncryptedRecord call');
@@ -117,7 +116,6 @@ function sender(origin) {
 }
 
 function resetCalls() {
-  rootKeyAvailable = true;
   rootKeyCalls = 0;
   calls.create.length = 0;
   calls.get.length = 0;
@@ -359,8 +357,8 @@ test('background listener refuses a plain HTTP sender on every WebAuthn route', 
   assert.equal(calls.available.length, 0);
 });
 
-// The one exception the platform itself makes: localhost is a secure context,
-// so a local development relying party keeps working over plain http.
+// Nydia permits plain HTTP for the exact localhost hostname so local
+// development relying parties keep working.
 test('background listener accepts a plain HTTP localhost sender', async () => {
   resetCalls();
 
