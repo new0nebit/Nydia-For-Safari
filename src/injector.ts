@@ -1,6 +1,14 @@
+import { toDomException } from './utils/domError';
+
 (() => {
   // Abort early if the Credential Management API is unavailable
   if (!('credentials' in navigator)) return;
+
+  // This script is web-accessible, so a page can load it directly instead of
+  // waiting for the dispatcher to inject it. Repeat the dispatcher's secure
+  // context check here so that path cannot install a WebAuthn client where the
+  // platform would not expose one.
+  if (!window.isSecureContext) return;
 
   console.info('[Injector] WebAuthn injector initialized');
 
@@ -166,10 +174,11 @@
         // Set up one-time message listener for WebAuthn response
         const handleWindowMessage = (event: MessageEvent) => {
           if (event.source !== window) return;
-          const { type, response, error } = (event.data as {
+          const { type, response, error, errorName } = (event.data as {
             type?: string;
             response?: unknown;
             error?: string;
+            errorName?: string;
           }) || {};
 
           switch (type) {
@@ -192,7 +201,16 @@
 
             case ERROR:
               window.removeEventListener('message', handleWindowMessage);
-              reject(new DOMException(error, 'NotAllowedError'));
+              // Reconstruct with the transported name (whitelisted inside
+              // toDomException); unknown names fall back to NotAllowedError.
+              {
+                const domError = toDomException(error, errorName);
+                console.debug('[Injector] Rejecting WebAuthn operation for relying party', {
+                  name: domError.name,
+                  message: domError.message,
+                });
+                reject(domError);
+              }
               break;
 
             case FALLBACK:

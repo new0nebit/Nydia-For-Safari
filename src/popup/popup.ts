@@ -95,7 +95,7 @@ function resetActionButton(state: PopupState): void {
   state.actionText.textContent = state.isCreateMode ? 'Create passkey' : 'Use passkey';
 }
 
-function showError(state: PopupState, message: string): void {
+function showError(state: PopupState, message: string, terminal = false): void {
   const existingError = state.content.querySelector('.nydia-popup-error');
   if (existingError) existingError.remove();
 
@@ -106,6 +106,9 @@ function showError(state: PopupState, message: string): void {
   state.content.insertBefore(errorMessage, state.buttonContainer);
 
   resetActionButton(state);
+  if (terminal) {
+    state.actionButton.disabled = true;
+  }
 
   requestAnimationFrame(() => sendResize(state, state.popup));
 }
@@ -372,7 +375,7 @@ function initPopup(sessionId: string, payload: PopupInitPayload, port: MessagePo
     }
 
     if (message.type === PopupMessage.Error) {
-      showError(currentState, message.message);
+      showError(currentState, message.message, message.terminal === true);
     }
   };
 }

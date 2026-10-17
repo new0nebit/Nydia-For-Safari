@@ -1,4 +1,5 @@
-import { logError } from '../logger';
+import { logDebug, logError } from '../logger';
+import { isWebAuthnDomException } from '../utils/domError';
 import {
   PopupErrorMessage,
   PopupFrameMessage,
@@ -77,16 +78,21 @@ export async function showPopup(
     const { port1, port2 } = new MessageChannel();
     const sessionId = createSessionId();
 
-    return await new Promise((resolve) => {
+    return await new Promise((resolve, reject) => {
       let actionInFlight = false;
+      let terminalErrorShown = false;
       let focusManager: ReturnType<typeof createPopupFocusManager> | null = null;
 
-      const cleanup = (result: unknown) => {
+      const teardown = () => {
         focusManager?.cleanup();
         port1.onmessage = null;
         port1.close();
         container.remove();
         activePopup = null;
+      };
+
+      const cleanup = (result: unknown) => {
+        teardown();
         resolve(result);
       };
 
@@ -98,12 +104,13 @@ export async function showPopup(
         shouldIgnoreEscape: () => actionInFlight,
       });
 
-      const sendPopupError = (error: unknown) => {
+      const sendPopupError = (error: unknown, terminal = false) => {
         const messageText = error instanceof Error ? error.message : String(error);
         const errorMessage: PopupErrorMessage = {
           type: PopupMessage.Error,
           sessionId,
           message: messageText,
+          terminal,
         };
         port1.postMessage(errorMessage);
       };
@@ -136,7 +143,7 @@ export async function showPopup(
         }
 
         if (message.type === PopupMessage.Action) {
-          if (actionInFlight) {
+          if (actionInFlight || terminalErrorShown) {
             return;
           }
 
@@ -151,6 +158,17 @@ export async function showPopup(
 
             cleanup(result);
           } catch (error: unknown) {
+            if (isWebAuthnDomException(error)) {
+              terminalErrorShown = true;
+              actionInFlight = false;
+              logDebug('[PopupHost] Showing terminal WebAuthn error in popup', {
+                name: error.name,
+                message: error.message,
+              });
+              sendPopupError(error, true);
+              reject(error);
+              return;
+            }
             sendPopupError(error);
             actionInFlight = false;
           }
@@ -184,6 +202,13 @@ export async function showPopup(
       activePopup = { cleanup };
     });
   } catch (error: unknown) {
+    if (isWebAuthnDomException(error)) {
+      logDebug('[PopupHost] Propagating terminal WebAuthn error to relying party', {
+        name: error.name,
+        message: error.message,
+      });
+      throw error;
+    }
     logError('[PopupHost] Failed to show popup', error);
     return 'closed';
   }

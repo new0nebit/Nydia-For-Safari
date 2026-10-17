@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "ignoreDeprecations": "6.0",
+    "outDir": "../.test-build",
+    "rootDir": "../src"
+  },
+  "include": [
+    "../src/background.ts",
+    "../src/store.ts",
+    "../src/utils/domError.ts",
+    "../src/utils/rpId.ts",
+    "../src/dispatcher.ts",
+    "../src/injector.ts"
+  ]
+}
