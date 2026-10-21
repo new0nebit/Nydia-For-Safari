@@ -8,8 +8,11 @@
 import Cocoa
 import SafariServices
 import WebKit
+import os
 
-let extensionBundleIdentifier = "me.Nydia.Extension"
+let extensionBundleIdentifier = Bundle.main.bundleIdentifier! + ".Extension"
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "app")
 
 class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHandler {
 
@@ -26,18 +29,19 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier) { (state, error) in
-            guard let state = state, error == nil else {
-                // Insert code to inform the user that something went wrong.
-                return
-            }
+        // Depends only on the macOS version, so set it before Safari answers (or fails to).
+        if #available(macOS 13, *) {
+            callJavaScript("useSettingsInsteadOfPreferences()")
+        }
 
+        SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: extensionBundleIdentifier) { (state, error) in
             DispatchQueue.main.async {
-                if #available(macOS 13, *) {
-                    webView.evaluateJavaScript("show(\(state.isEnabled), true)")
-                } else {
-                    webView.evaluateJavaScript("show(\(state.isEnabled), false)")
+                guard let state = state, error == nil else {
+                    self.report(error, while: "read the extension state")
+                    return
                 }
+
+                self.callJavaScript("show(enabled)", arguments: ["enabled": state.isEnabled])
             }
         }
     }
@@ -49,7 +53,43 @@ class ViewController: NSViewController, WKNavigationDelegate, WKScriptMessageHan
 
         SFSafariApplication.showPreferencesForExtension(withIdentifier: extensionBundleIdentifier) { error in
             DispatchQueue.main.async {
+                if let error = error {
+                    // Stay open so the user can still read how to turn the extension on manually.
+                    self.report(error, while: "open the extension settings in Safari")
+                    self.openSafari()
+                    return
+                }
+
                 NSApplication.shared.terminate(nil)
+            }
+        }
+    }
+
+    private func openSafari() {
+        guard let safari = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") else {
+            report(nil, while: "find Safari")
+            return
+        }
+
+        NSWorkspace.shared.openApplication(at: safari, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+            guard let error = error else { return }
+            DispatchQueue.main.async {
+                self.report(error, while: "launch Safari")
+            }
+        }
+    }
+
+    /// `action` completes the sentence "Couldn't …", shown under the button and logged.
+    private func report(_ error: Error?, while action: String) {
+        let code = (error as NSError?).map { "\($0.domain) \($0.code)" } ?? ""
+        logger.error("Couldn't \(action, privacy: .public) for \(extensionBundleIdentifier, privacy: .public): \(String(describing: error), privacy: .public)")
+        callJavaScript("showError(action, code)", arguments: ["action": action, "code": code])
+    }
+
+    private func callJavaScript(_ body: String, arguments: [String: Any] = [:]) {
+        webView.callAsyncJavaScript(body, arguments: arguments, in: nil, in: .page) { result in
+            if case .failure(let error) = result {
+                logger.error("JavaScript call \(body, privacy: .public) failed: \(String(describing: error), privacy: .public)")
             }
         }
     }
