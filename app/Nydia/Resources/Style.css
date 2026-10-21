@@ -43,3 +43,12 @@ body.state-off :is(.state-on, .state-unknown) {
 button {
     font-size: 1em;
 }
+
+.error {
+    font-size: smaller;
+    color: -apple-system-secondary-label;
+}
+
+.error p {
+    margin: 0.25em 0;
+}
